@@ -61,7 +61,7 @@ interface GeoPoint {
   altAccuracy: number | null;
   timestamp: number;
   type?: 'green' | 'bunker';
-  source?: 'GPS' | 'LiDAR';
+  source?: 'GPS' | 'LiDAR' | 'Manual' | 'Manual/LiDAR';
 }
 
 interface PivotRecord {
@@ -1640,66 +1640,101 @@ const App: React.FC = () => {
   const lidarFetchRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!isFollowing && mapCenter && mapStyle === 'LiDAR DTM') {
-      const timer = setTimeout(() => {
-        fetchLidarElevation(mapCenter.lat, mapCenter.lng);
+    if (!isFollowing && mapCenter) {
+      const timer = setTimeout(async () => {
+        const alt = await fetchLidarElevation(mapCenter.lat, mapCenter.lng);
+        // If we are NOT following GPS, we treat the map center as our "virtual" position
+        // This is perfect for PC users or when GPS is bad.
+        setPos(prev => {
+          // Only update if we are still not following
+          if (isFollowing) return prev;
+          return {
+            lat: mapCenter.lat,
+            lng: mapCenter.lng,
+            accuracy: 0.5,
+            timestamp: Date.now(),
+            alt: alt,
+            altAccuracy: alt !== null ? 0.2 : null,
+            source: 'Manual/LiDAR'
+          };
+        });
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [mapCenter, isFollowing, mapStyle]);
+  }, [mapCenter, isFollowing]);
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
     setLidarStatus('loading');
     setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: 'Constructing...' }));
     
-    const identifyUrl = `https://spatialdata.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
-    
-    const params = {
-      f: 'json',
-      geometryType: 'esriGeometryPoint',
-      geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
-      tolerance: '3',
-      mapExtent: `${lng - 0.001},${lat - 0.001},${lng + 0.001},${lat + 0.001}`,
-      imageDisplay: '100,100,96',
-      layers: 'all:0',
-      returnGeometry: 'false',
-      sr: '4326'
-    };
-
-    const queryString = Object.entries(params)
-      .map(([key, val]) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
-      .join('&');
-    
-    const fullUrl = `${identifyUrl}?${queryString}`;
-    setLidarDebug(prev => ({ ...prev, url: fullUrl }));
-
-    try {
-      const response = await fetch(fullUrl, { method: 'GET', mode: 'cors' });
+    return new Promise((resolve) => {
+      const identifyUrl = `https://spatialdata.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
+      const callbackName = `arcgis_cb_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
       
-      if (!response.ok) {
-        throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
-      }
+      const params = {
+        f: 'json',
+        geometryType: 'esriGeometryPoint',
+        geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
+        tolerance: '5',
+        mapExtent: `${lng - 0.005},${lat - 0.005},${lng + 0.005},${lat + 0.005}`,
+        imageDisplay: '100,100,96',
+        layers: '0',
+        returnGeometry: 'false',
+        sr: '4326',
+        callback: callbackName
+      };
 
-      const data = await response.json();
-      setLidarDebug(prev => ({ ...prev, response: data }));
+      const queryString = Object.entries(params)
+        .map(([key, val]) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
+        .join('&');
+      
+      const fullUrl = `${identifyUrl}?${queryString}`;
+      setLidarDebug(prev => ({ ...prev, url: fullUrl }));
 
-      if (data && data.results && data.results.length > 0) {
-        const res = data.results[0];
-        const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value']);
-        if (!isNaN(val)) {
-          setLidarStatus('available');
-          return val;
+      const script = document.createElement('script');
+      const timeoutId = setTimeout(() => {
+        cleanup();
+        setLidarStatus('error');
+        setLidarDebug(prev => ({ ...prev, response: 'TIMEOUT: Server did not respond within 15 seconds.' }));
+        resolve(null);
+      }, 15000);
+
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        if (script.parentNode) script.parentNode.removeChild(script);
+        delete (window as any)[callbackName];
+      };
+
+      (window as any)[callbackName] = (data: any) => {
+        cleanup();
+        setLidarDebug(prev => ({ ...prev, response: data }));
+        if (data && data.results && data.results.length > 0) {
+          const res = data.results[0];
+          // Try multiple ways to find the value in the ArcGIS response
+          const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
+          if (!isNaN(val)) {
+            setLidarStatus('available');
+            resolve(val);
+          } else {
+            setLidarStatus('error');
+            resolve(null);
+          }
+        } else {
+          setLidarStatus('error');
+          resolve(null);
         }
-      }
+      };
+
+      script.onerror = () => {
+        cleanup();
+        setLidarStatus('error');
+        setLidarDebug(prev => ({ ...prev, response: 'NETWORK ERROR: The Scottish Government server might be blocking direct access or is currently down.' }));
+        resolve(null);
+      };
       
-      setLidarStatus('error');
-      return null;
-    } catch (error: any) {
-      console.error("LiDAR Fetch Error:", error);
-      setLidarStatus('error');
-      setLidarDebug(prev => ({ ...prev, response: `FETCH ERROR: ${error.message || 'Unknown error'}` }));
-      return null;
-    }
+      script.src = fullUrl;
+      document.body.appendChild(script);
+    });
   };
 
   const viewRef = useRef<AppView>(view);
@@ -1798,20 +1833,22 @@ const App: React.FC = () => {
     const watch = navigator.geolocation.watchPosition(
       async (p) => {
         setGpsError(null);
-        handleUpdate(p);
-        if (viewRef.current === 'track') {
-          const currentTs = Date.now();
-          lidarFetchRef.current = currentTs;
-          const lidarAlt = await fetchLidarElevation(p.coords.latitude, p.coords.longitude);
-          if (lidarFetchRef.current === currentTs && lidarAlt !== null) {
-            const LIDAR_ACCURACY = 0.2;
-            setPos(prev => {
-              if (!prev || prev.timestamp > currentTs) return prev;
-              if (prev.altAccuracy === null || prev.altAccuracy > LIDAR_ACCURACY) {
-                return { ...prev, alt: lidarAlt, altAccuracy: LIDAR_ACCURACY, source: 'LiDAR' };
-              }
-              return prev;
-            });
+        if (isFollowing) {
+          handleUpdate(p);
+          if (viewRef.current === 'track') {
+            const currentTs = Date.now();
+            lidarFetchRef.current = currentTs;
+            const lidarAlt = await fetchLidarElevation(p.coords.latitude, p.coords.longitude);
+            if (lidarFetchRef.current === currentTs && lidarAlt !== null) {
+              const LIDAR_ACCURACY = 0.2;
+              setPos(prev => {
+                if (!prev || prev.timestamp > currentTs || !isFollowing) return prev;
+                if (prev.altAccuracy === null || prev.altAccuracy > LIDAR_ACCURACY) {
+                  return { ...prev, alt: lidarAlt, altAccuracy: LIDAR_ACCURACY, source: 'LiDAR' };
+                }
+                return prev;
+              });
+            }
           }
         }
       },
@@ -1823,7 +1860,7 @@ const App: React.FC = () => {
     );
 
     return () => navigator.geolocation.clearWatch(watch);
-  }, [locationResetKey]);
+  }, [locationResetKey, isFollowing]);
 
   const saveRecord = useCallback((record: Omit<SavedRecord, 'id' | 'date'>) => {
     const newRecord: SavedRecord = { ...record, id: Math.random().toString(36).substr(2, 9), date: Date.now() };
