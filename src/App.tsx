@@ -46,7 +46,7 @@ import html2canvas from 'html2canvas';
 
 /** --- TYPES --- **/
 // Fix: Renamed View to AppView to resolve "Cannot find name 'AppView'" errors on lines 839 and 1069
-type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'dataset' | 'settings';
+type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report';
 type UnitSystem = 'Yards' | 'Metres';
 type FontSize = 'small' | 'medium' | 'large';
 type RatingGender = 'Men' | 'Women'; 
@@ -307,6 +307,21 @@ The App is able to display the 'Accuracy Pattern' in real-time for Scratch and B
     color: "text--400",
     icon: <BookOpen className="text--400" />,
     content: "Whenever you save a track or green area, the data appears at the bottom of the homescreen. Select a result and it will show you the results again. Hitting the bin icon will delete an individual record. You can also save all results to a KML file, which will be stored in your downloads folder. The filename will be the current date and time. KML files can be opened in GIS packages, such as Google Earth or Google Maps for analysis and archiving purposes. If you already have a KML file from a previous rating, or have digitised greens in Google Earth and wish to import them for EGD processing, you can do this using 'Import KML'"
+  },
+  {
+    title: "Dataset Information",
+    color: "text-blue-400",
+    icon: <Layers className="text-blue-400" />,
+    content: (
+      <div className="space-y-4">
+        <p>The App is currently utilizing <span className="text-blue-500">Digital Terrain Model (DTM)</span> data from the Scottish LiDAR dataset.</p>
+        <p>This "bare earth" data is preferred for course rating as it filters out surface features like trees and buildings, providing the most accurate representation of the ground surface for elevation and slope calculations.</p>
+        <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+          <p className="text-blue-400 text-xs font-bold uppercase mb-2">Coverage Note</p>
+          <p className="text-xs">The Scottish LiDAR dataset does not yet cover the entire country. The App attempts to source data from various editions and years to maximize coverage. In areas where LiDAR is unavailable, the system will rely on device-based sensors.</p>
+        </div>
+      </div>
+    )
   },
   {
     title: "Help and suggestions",
@@ -971,66 +986,6 @@ const UserManual: React.FC<{ onClose: () => void }> = ({ onClose }) => {
              <div className={`text-slate-400 font-semibold ${textClasses}`}>{section.content}</div>
           </div>
         ))}
-      </div>
-    </div>
-  );
-};
-
-const DatasetInfo: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  return (
-    <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-6 overflow-y-auto no-scrollbar select-text">
-      <div className="flex justify-between items-center mb-8 mt-4">
-        <h2 className="text-3xl font-black text-blue-500 uppercase tracking-tighter">Dataset Info</h2>
-        <button onClick={onClose} className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90 transition-all border border-white/10 shadow-lg">
-          <X size={24} />
-        </button>
-      </div>
-      <div className="flex flex-col gap-8 pb-20">
-        <div className="bg-slate-900/50 border border-white/5 rounded-[2rem] p-6 shadow-xl">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center shadow-lg">
-              <Layers className="text-blue-400" size={20} />
-            </div>
-            <h3 className="text-xl font-black uppercase tracking-tight text-white">Scottish LiDAR DTM</h3>
-          </div>
-          <div className="text-slate-400 font-semibold text-sm leading-relaxed space-y-4">
-            <p>The App is currently utilizing <span className="text-blue-500">Digital Terrain Model (DTM)</span> data from the Scottish LiDAR dataset.</p>
-            <p>This "bare earth" data is preferred for course rating as it filters out surface features like trees and buildings, providing the most accurate representation of the ground surface for elevation and slope calculations.</p>
-            <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
-              <p className="text-blue-400 text-xs font-bold uppercase mb-2">Coverage Note</p>
-              <p className="text-xs">The Scottish LiDAR dataset does not yet cover the entire country. The App attempts to source data from various editions and years to maximize coverage. In areas where LiDAR is unavailable, the system will rely on device-based sensors.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const SettingsView: React.FC<{ onClose: () => void, onOpenDataset: () => void }> = ({ onClose, onOpenDataset }) => {
-  return (
-    <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-6 overflow-y-auto no-scrollbar select-text">
-      <div className="flex justify-between items-center mb-8 mt-4">
-        <h2 className="text-3xl font-black text-blue-500 uppercase tracking-tighter">Settings</h2>
-        <button onClick={onClose} className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90 transition-all border border-white/10 shadow-lg">
-          <X size={24} />
-        </button>
-      </div>
-      
-      <div className="flex flex-col gap-4">
-        <button 
-          onClick={onOpenDataset}
-          className="bg-slate-900/50 border border-white/5 rounded-2xl p-6 flex items-center gap-4 active:bg-slate-800 transition-colors text-left w-full"
-        >
-          <div className="w-12 h-12 bg-blue-600/20 rounded-full flex items-center justify-center text-blue-400 shrink-0">
-            <Info size={24} />
-          </div>
-          <div className="flex flex-col flex-1">
-            <span className="text-lg font-bold text-white">Dataset Information</span>
-            <span className="text-xs text-slate-400">View details about terrain data sources</span>
-          </div>
-          <ChevronRight size={20} className="text-slate-600" />
-        </button>
       </div>
     </div>
   );
@@ -2113,15 +2068,6 @@ const App: React.FC = () => {
             )}
           </header>
           <div className="flex flex-col gap-6">
-            <div className="flex justify-end -mb-2">
-              <button 
-                onClick={() => setView('settings')}
-                className="bg-slate-800/50 border border-white/10 p-2.5 rounded-full text-slate-400 active:scale-95 transition-all shadow-lg"
-                title="Settings"
-              >
-                <Settings size={24} />
-              </button>
-            </div>
             <button onClick={() => { setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><Navigation2 size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
@@ -2181,10 +2127,6 @@ const App: React.FC = () => {
         </div>
       ) : view === 'manual' ? (
         <UserManual onClose={() => setView('landing')} />
-      ) : view === 'settings' ? (
-        <SettingsView onClose={() => setView('landing')} onOpenDataset={() => setView('dataset')} />
-      ) : view === 'dataset' ? (
-        <DatasetInfo onClose={() => setView('settings')} />
       ) : view === 'stimp' ? (
         <StimpCalculator onClose={() => setView('landing')} />
       ) : view === 'report' ? (
