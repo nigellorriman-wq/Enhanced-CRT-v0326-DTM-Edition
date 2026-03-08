@@ -2035,7 +2035,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-[#020617] text-white overflow-hidden absolute inset-0 select-none font-sans">
+    <div className="flex flex-col h-full w-full bg-[#020617] text-white overflow-hidden absolute inset-0 font-sans">
       <div className="h-[env(safe-area-inset-top)] bg-[#0f172a] shrink-0"></div>
       {view === 'landing' ? (
         <div className="flex-1 flex flex-col p-6 overflow-y-auto no-scrollbar animate-in fade-in duration-700">
@@ -2223,8 +2223,8 @@ const App: React.FC = () => {
                 )}
 
                 {showLidarDebug && (
-                  <div className="fixed inset-0 z-[3000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
-                    <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl overflow-hidden">
+                  <div className="fixed inset-0 z-[3000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 select-text">
+                    <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl overflow-hidden select-text">
                       <div className="p-6 border-b border-white/5 flex justify-between items-center bg-slate-800/50">
                         <div className="flex items-center gap-3">
                           <Cpu size={20} className="text-blue-400" />
