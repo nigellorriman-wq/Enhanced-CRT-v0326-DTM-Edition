@@ -1661,76 +1661,29 @@ const App: React.FC = () => {
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
     setLidarStatus('loading');
-    setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: 'Constructing...' }));
+    setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: '/api/lidar' }));
     
-    return new Promise((resolve) => {
-      const identifyUrl = `https://spatialdata.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
-      const callbackName = `arcgis_cb_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    try {
+      const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
       
-      const params = {
-        f: 'json',
-        geometryType: 'esriGeometryPoint',
-        geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
-        tolerance: '5',
-        mapExtent: `${lng - 0.005},${lat - 0.005},${lng + 0.005},${lat + 0.005}`,
-        imageDisplay: '100,100,96',
-        layers: '0',
-        returnGeometry: 'false',
-        sr: '4326',
-        callback: callbackName
-      };
-
-      const queryString = Object.entries(params)
-        .map(([key, val]) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
-        .join('&');
-      
-      const fullUrl = `${identifyUrl}?${queryString}`;
-      setLidarDebug(prev => ({ ...prev, url: fullUrl }));
-
-      const script = document.createElement('script');
-      const timeoutId = setTimeout(() => {
-        cleanup();
-        setLidarStatus('error');
-        setLidarDebug(prev => ({ ...prev, response: 'TIMEOUT: Server did not respond within 15 seconds.' }));
-        resolve(null);
-      }, 15000);
-
-      const cleanup = () => {
-        clearTimeout(timeoutId);
-        if (script.parentNode) script.parentNode.removeChild(script);
-        delete (window as any)[callbackName];
-      };
-
-      (window as any)[callbackName] = (data: any) => {
-        cleanup();
-        setLidarDebug(prev => ({ ...prev, response: data }));
-        if (data && data.results && data.results.length > 0) {
-          const res = data.results[0];
-          // Try multiple ways to find the value in the ArcGIS response
-          const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
-          if (!isNaN(val)) {
-            setLidarStatus('available');
-            resolve(val);
-          } else {
-            setLidarStatus('error');
-            resolve(null);
-          }
-        } else {
-          setLidarStatus('error');
-          resolve(null);
+      setLidarDebug(prev => ({ ...prev, response: data }));
+      if (data && data.results && data.results.length > 0) {
+        const res = data.results[0];
+        const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
+        if (!isNaN(val)) {
+          setLidarStatus('available');
+          return val;
         }
-      };
-
-      script.onerror = () => {
-        cleanup();
-        setLidarStatus('error');
-        setLidarDebug(prev => ({ ...prev, response: 'NETWORK ERROR: The Scottish Government server might be blocking direct access or is currently down.' }));
-        resolve(null);
-      };
-      
-      script.src = fullUrl;
-      document.body.appendChild(script);
-    });
+      }
+      setLidarStatus('error');
+      return null;
+    } catch (error: any) {
+      setLidarStatus('error');
+      setLidarDebug(prev => ({ ...prev, response: `PROXY ERROR: ${error.message}` }));
+      return null;
+    }
   };
 
   const viewRef = useRef<AppView>(view);
