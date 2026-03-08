@@ -1652,74 +1652,54 @@ const App: React.FC = () => {
     setLidarStatus('loading');
     setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: 'Constructing...' }));
     
-    return new Promise((resolve) => {
-      const identifyUrl = `https://spatialdata.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
-      const callbackName = `arcgis_cb_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const identifyUrl = `https://spatialdata.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
+    
+    const params = {
+      f: 'json',
+      geometryType: 'esriGeometryPoint',
+      geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
+      tolerance: '3',
+      mapExtent: `${lng - 0.001},${lat - 0.001},${lng + 0.001},${lat + 0.001}`,
+      imageDisplay: '100,100,96',
+      layers: 'all:0',
+      returnGeometry: 'false',
+      sr: '4326'
+    };
+
+    const queryString = Object.entries(params)
+      .map(([key, val]) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
+      .join('&');
+    
+    const fullUrl = `${identifyUrl}?${queryString}`;
+    setLidarDebug(prev => ({ ...prev, url: fullUrl }));
+
+    try {
+      const response = await fetch(fullUrl, { method: 'GET', mode: 'cors' });
       
-      const params = {
-        f: 'json',
-        geometryType: 'esriGeometryPoint',
-        geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
-        tolerance: '2',
-        mapExtent: `${lng - 0.001},${lat - 0.001},${lng + 0.001},${lat + 0.001}`,
-        imageDisplay: '100,100,96',
-        layers: 'visible:0',
-        returnGeometry: 'false',
-        sr: '4326',
-        callback: callbackName
-      };
+      if (!response.ok) {
+        throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+      }
 
-      const queryString = Object.entries(params)
-        .map(([key, val]) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
-        .join('&');
-      
-      const fullUrl = `${identifyUrl}?${queryString}`;
-      setLidarDebug(prev => ({ ...prev, url: fullUrl }));
+      const data = await response.json();
+      setLidarDebug(prev => ({ ...prev, response: data }));
 
-      const script = document.createElement('script');
-      const timeoutId = setTimeout(() => {
-        cleanup();
-        setLidarStatus('error');
-        setLidarDebug(prev => ({ ...prev, response: 'TIMEOUT: Server did not respond within 10 seconds.' }));
-        resolve(null);
-      }, 10000);
-
-      const cleanup = () => {
-        clearTimeout(timeoutId);
-        if (script.parentNode) script.parentNode.removeChild(script);
-        delete (window as any)[callbackName];
-      };
-
-      (window as any)[callbackName] = (data: any) => {
-        cleanup();
-        setLidarDebug(prev => ({ ...prev, response: data }));
-        if (data && data.results && data.results.length > 0) {
-          const res = data.results[0];
-          // Try multiple ways to find the value
-          const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value']);
-          if (!isNaN(val)) {
-            setLidarStatus('available');
-            resolve(val);
-          } else {
-            setLidarStatus('error');
-            resolve(null);
-          }
-        } else {
-          setLidarStatus('error');
-          resolve(null);
+      if (data && data.results && data.results.length > 0) {
+        const res = data.results[0];
+        const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value']);
+        if (!isNaN(val)) {
+          setLidarStatus('available');
+          return val;
         }
-      };
-
-      script.onerror = () => {
-        cleanup();
-        setLidarStatus('error');
-        setLidarDebug(prev => ({ ...prev, response: 'NETWORK ERROR: Failed to load script.' }));
-        resolve(null);
-      };
+      }
       
-      script.src = fullUrl;
-      document.body.appendChild(script);
-    });
+      setLidarStatus('error');
+      return null;
+    } catch (error: any) {
+      console.error("LiDAR Fetch Error:", error);
+      setLidarStatus('error');
+      setLidarDebug(prev => ({ ...prev, response: `FETCH ERROR: ${error.message || 'Unknown error'}` }));
+      return null;
+    }
   };
 
   const viewRef = useRef<AppView>(view);
