@@ -947,7 +947,7 @@ const UserManual: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     }
   }, [fontSize]);
   return (
-    <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-6 overflow-y-auto no-scrollbar">
+    <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-6 overflow-y-auto no-scrollbar select-text">
       <div className="flex justify-between items-center mb-8 mt-4">
         <h2 className="text-3xl font-black text-blue-500 uppercase tracking-tighter">User Manual</h2>
         <div className="flex gap-2">
@@ -978,7 +978,7 @@ const UserManual: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
 const DatasetInfo: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   return (
-    <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-6 overflow-y-auto no-scrollbar">
+    <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-6 overflow-y-auto no-scrollbar select-text">
       <div className="flex justify-between items-center mb-8 mt-4">
         <h2 className="text-3xl font-black text-blue-500 uppercase tracking-tighter">Dataset Info</h2>
         <button onClick={onClose} className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90 transition-all border border-white/10 shadow-lg">
@@ -1009,7 +1009,7 @@ const DatasetInfo: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
 const SettingsView: React.FC<{ onClose: () => void, onOpenDataset: () => void }> = ({ onClose, onOpenDataset }) => {
   return (
-    <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-6 overflow-y-auto no-scrollbar">
+    <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-6 overflow-y-auto no-scrollbar select-text">
       <div className="flex justify-between items-center mb-8 mt-4">
         <h2 className="text-3xl font-black text-blue-500 uppercase tracking-tighter">Settings</h2>
         <button onClick={onClose} className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90 transition-all border border-white/10 shadow-lg">
@@ -1665,8 +1665,11 @@ const App: React.FC = () => {
     
     try {
       const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.details || `HTTP error! status: ${response.status}`);
+      }
       
       setLidarDebug(prev => ({ ...prev, response: data }));
       if (data && data.results && data.results.length > 0) {
@@ -2089,7 +2092,7 @@ const App: React.FC = () => {
               <span className="text-yellow-400">DTM Edition</span>
             </p>
             {gpsError && (
-              <div className="mt-6 bg-rose-500/20 border border-rose-500/30 p-4 rounded-2xl flex flex-col gap-3 animate-pulse">
+              <div className="mt-6 bg-rose-500/20 border border-rose-500/30 p-4 rounded-2xl flex flex-col gap-3 animate-pulse select-text">
                 <div className="flex items-center gap-3">
                   <AlertTriangle size={16} className="text-rose-400 shrink-0" />
                   <p className="text-[10px] font-bold text-rose-400 uppercase tracking-widest text-left leading-relaxed">{gpsError}</p>
@@ -2289,7 +2292,7 @@ const App: React.FC = () => {
                           <X size={20} />
                         </button>
                       </div>
-                      <div className="flex-1 overflow-y-auto p-6 space-y-6 font-mono text-xs">
+                      <div className="flex-1 overflow-y-auto p-6 space-y-6 font-mono text-xs select-text">
                         <section>
                           <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Query Coordinates</h4>
                           <div className="bg-black/40 p-3 rounded-xl border border-white/5">
@@ -2305,7 +2308,7 @@ const App: React.FC = () => {
                         </section>
                         <section>
                           <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Server Response</h4>
-                          <pre className="bg-black/40 p-3 rounded-xl border border-white/5 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                          <pre className="bg-black/40 p-3 rounded-xl border border-white/5 overflow-x-auto whitespace-pre-wrap leading-relaxed select-text">
                             {JSON.stringify(lidarDebug.response, null, 2)}
                           </pre>
                         </section>
@@ -2426,7 +2429,7 @@ const App: React.FC = () => {
           </main>
           <div className="absolute inset-x-0 bottom-0 z-[1000] p-4 pointer-events-none flex flex-col gap-2 items-center pb-12">
             <div className="flex flex-col gap-2 w-full max-w-[340px]">
-              <div className="pointer-events-auto bg-slate-900/95 border border-white/20 rounded-[2.8rem] px-6 py-4 w-full shadow-2xl backdrop-blur-md">
+              <div className="pointer-events-auto bg-slate-900/95 border border-white/20 rounded-[2.8rem] px-6 py-4 w-full shadow-2xl backdrop-blur-md select-text">
                 {view === 'track' ? (
                   <div className="flex flex-col gap-3">
                     <div className="grid grid-cols-3 gap-4">
