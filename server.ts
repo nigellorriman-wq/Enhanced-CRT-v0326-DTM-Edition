@@ -29,7 +29,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing lat/lng' });
       }
 
-      const coverageId = 'scotland__scotland-lidar-6-dtm';
+      const coverageId = 'scotland:lidar-aggregate';
       const wcsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
       
       // WCS 2.0.1 subsetting for a point
@@ -64,6 +64,29 @@ async function startServer() {
         error: 'Failed to fetch LiDAR data', 
         details: typeof data === 'object' ? JSON.stringify(data) : data 
       });
+    }
+  });
+
+  // API route for WCS capabilities
+  app.get("/api/wcs-capabilities", async (req, res) => {
+    console.log(`[WCS API] GetCapabilities request received`);
+    try {
+      const wcsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
+      const params = new URLSearchParams();
+      params.append('service', 'WCS');
+      params.append('version', '2.0.1');
+      params.append('request', 'GetCapabilities');
+
+      const response = await axios.get(wcsUrl, { 
+        params: params,
+        timeout: 15000
+      });
+      
+      res.set('Content-Type', 'application/xml');
+      res.send(response.data);
+    } catch (error: any) {
+      console.error('[WCS API] Error:', error.message);
+      res.status(500).json({ error: 'Failed to fetch WCS capabilities' });
     }
   });
 

@@ -44,9 +44,11 @@ import {
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 
+import { WCSAnalyzer } from './components/WCSAnalyzer';
+
 /** --- TYPES --- **/
 // Fix: Renamed View to AppView to resolve "Cannot find name 'AppView'" errors on lines 839 and 1069
-type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report';
+type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs';
 type UnitSystem = 'Yards' | 'Metres';
 type FontSize = 'small' | 'medium' | 'large';
 type RatingGender = 'Men' | 'Women'; 
@@ -2137,6 +2139,10 @@ const App: React.FC = () => {
               <BookOpen size={20} className="text-blue-400" />
               <span className="text-[11px] font-bold uppercase tracking-widest text-white">User Manual</span>
             </button>
+            <button onClick={() => setView('wcs')} className="mt-2 bg-slate-800/50 border border-white/10 rounded-[1.8rem] py-6 flex items-center justify-center gap-4 active:bg-slate-700 transition-colors">
+              <Layers size={20} className="text-emerald-400" />
+              <span className="text-[11px] font-bold uppercase tracking-widest text-white">WCS Capabilities Analysis</span>
+            </button>
             <div className="flex gap-4 mt-2">
                <button onClick={exportKML} className="flex-1 bg-slate-800/50 border border-blue-500/20 rounded-[1.8rem] py-6 flex items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-lg"><Download size={18} className="text-blue-500" /><span className="text-[10px] font-bold uppercase tracking-widest text-white">Export</span></button>
                <label className="flex-1 bg-slate-800/50 border border-emerald-500/20 rounded-[1.8rem] py-6 flex items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-lg cursor-pointer"><Upload size={18} className="text-emerald-500" /><span className="text-[10px] font-bold uppercase tracking-widest text-white">Import</span><input type="file" accept=".kml" onChange={importKML} className="hidden" /></label>
@@ -2168,6 +2174,8 @@ const App: React.FC = () => {
         <StimpCalculator onClose={() => setView('landing')} />
       ) : view === 'report' ? (
         <ReportView greens={reportGreens} fileName={reportFileName} onClose={() => setView('landing')} units={units} />
+      ) : view === 'wcs' ? (
+        <WCSAnalyzer onBack={() => setView('landing')} />
       ) : (
         <div className="flex-1 flex flex-col relative animate-in slide-in-from-right duration-300">
           <div className="absolute top-0 left-0 right-0 z-[1000] p-4 flex justify-between pointer-events-none">
@@ -2203,14 +2211,22 @@ const App: React.FC = () => {
           <main className="flex-1">
             {(pos || viewingRecord) ? (
               <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
-                {mapStyle === 'LiDAR DTM' ? (
+                <TileLayer 
+                  url={(mapStyle === 'Satellite' || mapStyle === 'LiDAR DTM') 
+                    ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" 
+                    : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"} 
+                  maxZoom={22} 
+                  maxNativeZoom={19} 
+                />
+                {mapStyle === 'LiDAR DTM' && (
                   <WMSTileLayer
                     url="https://srsp-ows.jncc.gov.uk/ows"
-                    layers="scotland:scotland-lidar-6-dtm"
+                    layers="scotland:lidar-aggregate"
                     styles="scotland:lidar-dem-viridis"
                     format="image/png"
                     transparent={true}
                     version="1.3.0"
+                    opacity={0.6}
                     maxZoom={22}
                     minZoom={10}
                     eventHandlers={{
@@ -2226,12 +2242,6 @@ const App: React.FC = () => {
                         }
                       }
                     }}
-                  />
-                ) : (
-                  <TileLayer 
-                    url={mapStyle === 'Street' ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"} 
-                    maxZoom={22} 
-                    maxNativeZoom={19} 
                   />
                 )}
                 <MapController 

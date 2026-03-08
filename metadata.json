@@ -1,6 +1,6 @@
 {
   "name": "Scottish Golf Rating Toolkit - DTM Edition",
-  "description": "Scottish Golf Rating Toolkit - DTM Edition\nUtilising LiDAR data for Scotland",
+  "description": "Scottish Golf Rating Toolkit - DTM Edition\nUtilising LiDAR data for Scotland and WCS Capabilities Analysis",
   "requestFramePermissions": [
     "geolocation"
   ]
