@@ -1629,6 +1629,8 @@ const App: React.FC = () => {
   const [isFollowing, setIsFollowing] = useState(true);
   const [mapCenter, setMapCenter] = useState<GeoPoint | null>(null);
   const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available'>('idle');
+  const [lidarDebug, setLidarDebug] = useState<{ url: string, response: any, coords: { lat: number, lng: number } | null }>({ url: '', response: null, coords: null });
+  const [showLidarDebug, setShowLidarDebug] = useState(false);
   const [lidarLayerLoading, setLidarLayerLoading] = useState(false);
   const [reportGreens, setReportGreens] = useState<SavedRecord[]>([]);
   const [reportFileName, setReportFileName] = useState("");
@@ -1647,6 +1649,8 @@ const App: React.FC = () => {
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
     setLidarStatus('loading');
+    setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: 'Constructing...' }));
+    
     return new Promise((resolve) => {
       const identifyUrl = `https://map.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
       const callbackName = `arcgis_cb_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
@@ -1655,21 +1659,29 @@ const App: React.FC = () => {
         f: 'json',
         geometryType: 'esriGeometryPoint',
         geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
-        tolerance: '2',
-        mapExtent: `${lng - 0.001},${lat - 0.001},${lng + 0.001},${lat + 0.001}`,
-        imageDisplay: '100,100,96',
+        tolerance: '10',
+        mapExtent: `${lng - 0.01},${lat - 0.01},${lng + 0.01},${lat + 0.01}`,
+        imageDisplay: '1000,1000,96',
         layers: 'all',
         returnGeometry: 'false',
         sr: '4326',
         callback: callbackName
       };
 
+      const queryString = Object.entries(params)
+        .map(([key, val]) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
+        .join('&');
+      
+      const fullUrl = `${identifyUrl}?${queryString}`;
+      setLidarDebug(prev => ({ ...prev, url: fullUrl }));
+
       const script = document.createElement('script');
       const timeoutId = setTimeout(() => {
         cleanup();
         setLidarStatus('error');
+        setLidarDebug(prev => ({ ...prev, response: 'TIMEOUT: Server did not respond within 10 seconds.' }));
         resolve(null);
-      }, 5000);
+      }, 10000);
 
       const cleanup = () => {
         clearTimeout(timeoutId);
@@ -1679,9 +1691,11 @@ const App: React.FC = () => {
 
       (window as any)[callbackName] = (data: any) => {
         cleanup();
+        setLidarDebug(prev => ({ ...prev, response: data }));
         if (data && data.results && data.results.length > 0) {
           const res = data.results[0];
-          const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value']);
+          // Try multiple ways to find the value
+          const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value']);
           if (!isNaN(val)) {
             setLidarStatus('available');
             resolve(val);
@@ -1698,14 +1712,11 @@ const App: React.FC = () => {
       script.onerror = () => {
         cleanup();
         setLidarStatus('error');
+        setLidarDebug(prev => ({ ...prev, response: 'NETWORK ERROR: Failed to load script.' }));
         resolve(null);
       };
-
-      const queryString = Object.entries(params)
-        .map(([key, val]) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`)
-        .join('&');
       
-      script.src = `${identifyUrl}?${queryString}`;
+      script.src = fullUrl;
       document.body.appendChild(script);
     });
   };
@@ -2237,11 +2248,54 @@ const App: React.FC = () => {
                         <span className="text-[10px] font-bold uppercase tracking-widest text-rose-400">LiDAR Data Unavailable Here</span>
                       </div>
                     ) : lidarStatus === 'available' ? (
-                      <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
+                      <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
                         <CheckCircle2 size={12} className="text-emerald-400" />
                         <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">LiDAR Active</span>
                       </div>
                     ) : null}
+                  </div>
+                )}
+
+                {showLidarDebug && (
+                  <div className="fixed inset-0 z-[3000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+                    <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl overflow-hidden">
+                      <div className="p-6 border-b border-white/5 flex justify-between items-center bg-slate-800/50">
+                        <div className="flex items-center gap-3">
+                          <Cpu size={20} className="text-blue-400" />
+                          <h3 className="text-lg font-black uppercase tracking-tighter">LiDAR Diagnostic Data</h3>
+                        </div>
+                        <button onClick={() => setShowLidarDebug(false)} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-slate-400 active:scale-90 transition-all">
+                          <X size={20} />
+                        </button>
+                      </div>
+                      <div className="flex-1 overflow-y-auto p-6 space-y-6 font-mono text-xs">
+                        <section>
+                          <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Query Coordinates</h4>
+                          <div className="bg-black/40 p-3 rounded-xl border border-white/5">
+                            Lat: {lidarDebug.coords?.lat.toFixed(6)}<br />
+                            Lng: {lidarDebug.coords?.lng.toFixed(6)}
+                          </div>
+                        </section>
+                        <section>
+                          <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Request URL</h4>
+                          <div className="bg-black/40 p-3 rounded-xl border border-white/5 break-all text-[10px] leading-relaxed">
+                            {lidarDebug.url}
+                          </div>
+                        </section>
+                        <section>
+                          <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Server Response</h4>
+                          <pre className="bg-black/40 p-3 rounded-xl border border-white/5 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                            {JSON.stringify(lidarDebug.response, null, 2)}
+                          </pre>
+                        </section>
+                        <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                          <p className="text-[10px] text-blue-300 leading-relaxed italic">
+                            Tip: If "results" is empty, the ArcGIS server has no 1m DTM data for this exact coordinate. 
+                            Try panning slightly or zooming in.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
                 <AccuracyOvals 
