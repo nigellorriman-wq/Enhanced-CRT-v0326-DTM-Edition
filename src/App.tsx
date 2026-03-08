@@ -1620,21 +1620,41 @@ const App: React.FC = () => {
     
     try {
       const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`);
-      const data = await response.json();
       
-      if (!response.ok) {
-        throw new Error(data.details || `HTTP error! status: ${response.status}`);
-      }
-      
-      setLidarDebug(prev => ({ ...prev, response: data }));
-      if (data && data.results && data.results.length > 0) {
-        const res = data.results[0];
-        const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
-        if (!isNaN(val)) {
-          setLidarStatus('available');
-          return val;
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.details || data.error || `HTTP error! status: ${response.status}`);
         }
+        setLidarDebug(prev => ({ ...prev, response: data }));
+        
+        // Handle new JNCC WCS format
+        if (data && data.elevation !== undefined) {
+          const val = parseFloat(data.elevation);
+          if (!isNaN(val)) {
+            setLidarStatus('available');
+            return val;
+          }
+        }
+        
+        // Fallback for old ArcGIS format (if needed, though api/lidar.ts was updated)
+        if (data && data.results && data.results.length > 0) {
+          const res = data.results[0];
+          const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
+          if (!isNaN(val)) {
+            setLidarStatus('available');
+            return val;
+          }
+        }
+      } else {
+        const text = await response.text();
+        if (!response.ok) {
+          throw new Error(`Server returned ${response.status}: ${text.substring(0, 100)}...`);
+        }
+        throw new Error("Expected JSON response but received something else.");
       }
+      
       setLidarStatus('error');
       return null;
     } catch (error: any) {
@@ -2168,8 +2188,8 @@ const App: React.FC = () => {
               <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
                 {mapStyle === 'LiDAR DTM' ? (
                   <WMSTileLayer
-                    url="https://spatialdata.gov.scot/arcgis/services/Public/Lidar_DTM_1m/MapServer/WMSServer"
-                    layers="0"
+                    url="https://srsp-ows.jncc.gov.uk/ows"
+                    layers="scotland:lidar-aggregate"
                     format="image/png"
                     transparent={true}
                     version="1.3.0"
