@@ -18,6 +18,8 @@ import {
   HelpCircle,
   X,
   AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
   Cpu,
   Eye,
   Diameter,
@@ -1618,6 +1620,8 @@ const App: React.FC = () => {
   const [isBunker, setIsBunker] = useState(false);
   const [ovalMode, setOvalMode] = useState<OvalMode>('off');
   const [isFollowing, setIsFollowing] = useState(true);
+  const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available'>('idle');
+  const [lidarLayerLoading, setLidarLayerLoading] = useState(false);
   const [reportGreens, setReportGreens] = useState<SavedRecord[]>([]);
   const [reportFileName, setReportFileName] = useState("");
   const CONCAVITY_FIXED = 0.82;
@@ -1625,6 +1629,7 @@ const App: React.FC = () => {
   const lidarFetchRef = useRef<number>(0);
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
+    setLidarStatus('loading');
     return new Promise((resolve) => {
       const identifyUrl = `https://map.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
       const callbackName = `arcgis_cb_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
@@ -1645,6 +1650,7 @@ const App: React.FC = () => {
       const script = document.createElement('script');
       const timeoutId = setTimeout(() => {
         cleanup();
+        setLidarStatus('error');
         resolve(null);
       }, 5000);
 
@@ -1659,14 +1665,22 @@ const App: React.FC = () => {
         if (data && data.results && data.results.length > 0) {
           const res = data.results[0];
           const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value']);
-          resolve(isNaN(val) ? null : val);
+          if (!isNaN(val)) {
+            setLidarStatus('available');
+            resolve(val);
+          } else {
+            setLidarStatus('error');
+            resolve(null);
+          }
         } else {
+          setLidarStatus('error');
           resolve(null);
         }
       };
 
       script.onerror = () => {
         cleanup();
+        setLidarStatus('error');
         resolve(null);
       };
 
@@ -2040,13 +2054,6 @@ const App: React.FC = () => {
         <div className="flex-1 flex flex-col p-6 overflow-y-auto no-scrollbar animate-in fade-in duration-700">
           <header className="mb-12 mt-8 flex flex-col items-center text-center relative">
             <h1 className="text-5xl tracking-tighter font-bold text-blue-500">Scottish Golf</h1>
-            <button 
-              onClick={() => setView('settings')}
-              className="absolute right-0 top-1/2 -translate-y-1/2 bg-slate-800/50 border border-white/10 p-2.5 rounded-full text-slate-400 active:scale-95 transition-all shadow-lg"
-              title="Settings"
-            >
-              <Settings size={24} />
-            </button>
             <p className="text-white text-[11px] font-bold tracking-[0.4em] uppercase mt-2 opacity-80">
               Enhanced Course Rating Toolkit v03.26
               <br />
@@ -2054,6 +2061,15 @@ const App: React.FC = () => {
             </p>
           </header>
           <div className="flex flex-col gap-6">
+            <div className="flex justify-end -mb-2">
+              <button 
+                onClick={() => setView('settings')}
+                className="bg-slate-800/50 border border-white/10 p-2.5 rounded-full text-slate-400 active:scale-95 transition-all shadow-lg"
+                title="Settings"
+              >
+                <Settings size={24} />
+              </button>
+            </div>
             <button onClick={() => { setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><Navigation2 size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
@@ -2156,8 +2172,38 @@ const App: React.FC = () => {
           <main className="flex-1">
             {(pos || viewingRecord) ? (
               <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
-                <TileLayer url={mapStyle === 'Street' ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" : mapStyle === 'Satellite' ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" : "https://map.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/tile/{z}/{y}/{x}"} maxZoom={22} maxNativeZoom={19} />
+                <TileLayer 
+                  url={mapStyle === 'Street' ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" : mapStyle === 'Satellite' ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" : "https://map.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/tile/{z}/{y}/{x}"} 
+                  maxZoom={22} 
+                  maxNativeZoom={19} 
+                  eventHandlers={{
+                    loading: () => { if (mapStyle === 'LiDAR DTM') setLidarLayerLoading(true); },
+                    load: () => { setLidarLayerLoading(false); },
+                    tileerror: () => { if (mapStyle === 'LiDAR DTM') setLidarStatus('error'); }
+                  }}
+                />
                 <MapController key={mapLockKey} pos={pos} active={trkActive || mapActive} mapPoints={mapPoints} completed={mapCompleted} viewingRecord={viewingRecord} mode={view} trkPoints={trkPoints} isFollowing={isFollowing} setIsFollowing={setIsFollowing}/>
+                
+                {mapStyle === 'LiDAR DTM' && (
+                  <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-none">
+                    {(lidarLayerLoading || lidarStatus === 'loading') ? (
+                      <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
+                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Loading LiDAR Terrain...</span>
+                      </div>
+                    ) : lidarStatus === 'error' ? (
+                      <div className="bg-rose-900/80 backdrop-blur-md border border-rose-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
+                        <AlertTriangle size={12} className="text-rose-400" />
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-rose-400">LiDAR Data Unavailable Here</span>
+                      </div>
+                    ) : lidarStatus === 'available' ? (
+                      <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
+                        <CheckCircle2 size={12} className="text-emerald-400" />
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">LiDAR Active</span>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
                 <AccuracyOvals 
                   pos={pos} 
                   pivots={currentPivots} 
