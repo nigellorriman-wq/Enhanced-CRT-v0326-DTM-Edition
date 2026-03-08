@@ -1627,6 +1627,7 @@ const App: React.FC = () => {
   const [isBunker, setIsBunker] = useState(false);
   const [ovalMode, setOvalMode] = useState<OvalMode>('off');
   const [isFollowing, setIsFollowing] = useState(true);
+  const [gpsError, setGpsError] = useState<string | null>(null);
   const [mapCenter, setMapCenter] = useState<GeoPoint | null>(null);
   const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available'>('idle');
   const [lidarDebug, setLidarDebug] = useState<{ url: string, response: any, coords: { lat: number, lng: number } | null }>({ url: '', response: null, coords: null });
@@ -1652,7 +1653,7 @@ const App: React.FC = () => {
     setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: 'Constructing...' }));
     
     return new Promise((resolve) => {
-      const identifyUrl = `https://map.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
+      const identifyUrl = `https://spatialdata.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/identify`;
       const callbackName = `arcgis_cb_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
       
       const params = {
@@ -1774,14 +1775,49 @@ const App: React.FC = () => {
       timeout: 5000
     };
 
+    const handleError = (error: GeolocationPositionError) => {
+      console.error("Geolocation error:", error);
+      switch(error.code) {
+        case error.PERMISSION_DENIED:
+          setGpsError("Permission Denied: Please allow location access in your browser settings or open the app in a new tab.");
+          break;
+        case error.POSITION_UNAVAILABLE:
+          setGpsError("Position Unavailable: GPS signal might be weak.");
+          break;
+        case error.TIMEOUT:
+          setGpsError("Timeout: GPS request timed out.");
+          break;
+        default:
+          setGpsError("An unknown error occurred with GPS.");
+      }
+    };
+
+    const checkPermission = async () => {
+      try {
+        if (navigator.permissions && navigator.permissions.query) {
+          const result = await navigator.permissions.query({ name: 'geolocation' as any });
+          if (result.state === 'denied') {
+            setGpsError("Permission Denied: Please reset location permissions for this site in your browser address bar.");
+          }
+          result.onchange = () => {
+            if (result.state === 'granted') setLocationResetKey(k => k + 1);
+          };
+        }
+      } catch (e) {
+        console.warn("Permissions API not supported", e);
+      }
+    };
+    checkPermission();
+
     // Try multiple strategies
     navigator.geolocation.getCurrentPosition(handleUpdate, 
-      () => navigator.geolocation.getCurrentPosition(handleUpdate, null, coarseOptions), 
+      () => navigator.geolocation.getCurrentPosition(handleUpdate, handleError, coarseOptions), 
       options
     );
 
     const watch = navigator.geolocation.watchPosition(
       async (p) => {
+        setGpsError(null);
         handleUpdate(p);
         if (viewRef.current === 'track') {
           const currentTs = Date.now();
@@ -1800,8 +1836,7 @@ const App: React.FC = () => {
         }
       },
       (err) => {
-        console.warn("Watch error, retrying coarse:", err);
-        // If high accuracy watch fails, we don't stop, but we might want to try a coarse one-shot
+        handleError(err);
         navigator.geolocation.getCurrentPosition(handleUpdate, null, coarseOptions);
       },
       { ...options, timeout: 60000 }
@@ -2087,6 +2122,26 @@ const App: React.FC = () => {
               <br />
               <span className="text-yellow-400">DTM Edition</span>
             </p>
+            {gpsError && (
+              <div className="mt-6 bg-rose-500/20 border border-rose-500/30 p-4 rounded-2xl flex flex-col gap-3 animate-pulse">
+                <div className="flex items-center gap-3">
+                  <AlertTriangle size={16} className="text-rose-400 shrink-0" />
+                  <p className="text-[10px] font-bold text-rose-400 uppercase tracking-widest text-left leading-relaxed">{gpsError}</p>
+                </div>
+                <button 
+                  onClick={() => setLocationResetKey(k => k + 1)}
+                  className="bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest text-rose-400 transition-all active:scale-95"
+                >
+                  Retry GPS Connection
+                </button>
+              </div>
+            )}
+            {!gpsError && !pos && (
+              <div className="mt-6 bg-blue-500/10 border border-blue-500/20 p-4 rounded-2xl flex items-center gap-3">
+                <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
+                <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Waiting for GPS lock...</p>
+              </div>
+            )}
           </header>
           <div className="flex flex-col gap-6">
             <div className="flex justify-end -mb-2">
@@ -2202,7 +2257,7 @@ const App: React.FC = () => {
               <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
                 {mapStyle === 'LiDAR DTM' ? (
                   <WMSTileLayer
-                    url="https://map.gov.scot/arcgis/services/Public/Lidar_DTM_1m/MapServer/WMSServer"
+                    url="https://spatialdata.gov.scot/arcgis/services/Public/Lidar_DTM_1m/MapServer/WMSServer"
                     layers="0"
                     format="image/png"
                     transparent={true}
@@ -2243,7 +2298,7 @@ const App: React.FC = () => {
                         <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Loading LiDAR Terrain...</span>
                       </div>
                     ) : lidarStatus === 'error' ? (
-                      <div className="bg-rose-900/80 backdrop-blur-md border border-rose-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
+                      <div className="bg-rose-900/80 backdrop-blur-md border border-rose-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
                         <AlertTriangle size={12} className="text-rose-400" />
                         <span className="text-[10px] font-bold uppercase tracking-widest text-rose-400">LiDAR Data Unavailable Here</span>
                       </div>
