@@ -878,8 +878,9 @@ const AccuracyOvals: React.FC<{
 
 const MapController: React.FC<{ 
   pos: GeoPoint | null, active: boolean, mapPoints: GeoPoint[], completed: boolean, viewingRecord: SavedRecord | null, mode: AppView, trkPoints: GeoPoint[], isFollowing: boolean, setIsFollowing: (v: boolean) => void,
-  onMapMove?: (lat: number, lng: number) => void
-}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove }) => {
+  onMapMove?: (lat: number, lng: number) => void,
+  onZoomChange?: (zoom: number) => void
+}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove, onZoomChange }) => {
   const map = useMap();
   const lastViewId = useRef<string | null>(null);
   const hasInitialLock = useRef(false);
@@ -892,6 +893,11 @@ useMapEvents({
       if (onMapMove) {
         const center = map.getCenter();
         onMapMove(center.lat, center.lng);
+      }
+    },
+    zoomend: () => {
+      if (onZoomChange) {
+        onZoomChange(map.getZoom());
       }
     }
   });
@@ -1581,7 +1587,18 @@ const App: React.FC = () => {
   const [isFollowing, setIsFollowing] = useState(true);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [mapCenter, setMapCenter] = useState<GeoPoint | null>(null);
+  const [currentZoom, setCurrentZoom] = useState(2);
+  const tilesLoadedCount = React.useRef(0);
   const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available'>('idle');
+
+  React.useEffect(() => {
+    if (mapStyle === 'LiDAR DTM') {
+      tilesLoadedCount.current = 0;
+      setLidarStatus('loading');
+    } else {
+      setLidarStatus('idle');
+    }
+  }, [mapStyle]);
   const [lidarDebug, setLidarDebug] = useState<{ url: string, response: any, coords: { lat: number, lng: number } | null }>({ url: '', response: null, coords: null });
   const [showLidarDebug, setShowLidarDebug] = useState(false);
   const [lidarLayerLoading, setLidarLayerLoading] = useState(false);
@@ -2189,15 +2206,25 @@ const App: React.FC = () => {
                 {mapStyle === 'LiDAR DTM' ? (
                   <WMSTileLayer
                     url="https://srsp-ows.jncc.gov.uk/ows"
-                    layers="scotland:lidar-aggregate"
+                    layers="scotland:scotland-lidar-6-dtm"
+                    styles="scotland:lidar-dem-viridis"
                     format="image/png"
                     transparent={true}
                     version="1.3.0"
                     maxZoom={22}
+                    minZoom={10}
                     eventHandlers={{
                       loading: () => { setLidarLayerLoading(true); },
-                      load: () => { setLidarLayerLoading(false); },
-                      tileerror: () => { setLidarStatus('error'); }
+                      load: () => { 
+                        setLidarLayerLoading(false); 
+                        tilesLoadedCount.current += 1;
+                        if (lidarStatus !== 'available') setLidarStatus('available');
+                      },
+                      tileerror: () => { 
+                        if (tilesLoadedCount.current === 0) {
+                          setLidarStatus('error'); 
+                        }
+                      }
                     }}
                   />
                 ) : (
@@ -2219,11 +2246,16 @@ const App: React.FC = () => {
                   isFollowing={isFollowing} 
                   setIsFollowing={setIsFollowing}
                   onMapMove={(lat, lng) => setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null })}
+                  onZoomChange={setCurrentZoom}
                 />
                 
                 {mapStyle === 'LiDAR DTM' && (
                   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-none">
-                    {(lidarLayerLoading || lidarStatus === 'loading') ? (
+                    {currentZoom < 10 ? (
+                      <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Zoom in for LiDAR</span>
+                      </div>
+                    ) : (lidarLayerLoading || lidarStatus === 'loading') ? (
                       <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
                         <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
                         <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Loading LiDAR Terrain...</span>
@@ -2242,48 +2274,7 @@ const App: React.FC = () => {
                   </div>
                 )}
 
-                {showLidarDebug && (
-                  <div className="fixed inset-0 z-[3000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 select-text">
-                    <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl overflow-hidden select-text">
-                      <div className="p-6 border-b border-white/5 flex justify-between items-center bg-slate-800/50">
-                        <div className="flex items-center gap-3">
-                          <Cpu size={20} className="text-blue-400" />
-                          <h3 className="text-lg font-black uppercase tracking-tighter">LiDAR Diagnostic Data</h3>
-                        </div>
-                        <button onClick={() => setShowLidarDebug(false)} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-slate-400 active:scale-90 transition-all">
-                          <X size={20} />
-                        </button>
-                      </div>
-                      <div className="flex-1 overflow-y-auto p-6 space-y-6 font-mono text-xs select-text">
-                        <section>
-                          <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Query Coordinates</h4>
-                          <div className="bg-black/40 p-3 rounded-xl border border-white/5">
-                            Lat: {lidarDebug.coords?.lat.toFixed(6)}<br />
-                            Lng: {lidarDebug.coords?.lng.toFixed(6)}
-                          </div>
-                        </section>
-                        <section>
-                          <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Request URL</h4>
-                          <div className="bg-black/40 p-3 rounded-xl border border-white/5 break-all text-[10px] leading-relaxed">
-                            {lidarDebug.url}
-                          </div>
-                        </section>
-                        <section>
-                          <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Server Response</h4>
-                          <pre className="bg-black/40 p-3 rounded-xl border border-white/5 overflow-x-auto whitespace-pre-wrap leading-relaxed select-text">
-                            {JSON.stringify(lidarDebug.response, null, 2)}
-                          </pre>
-                        </section>
-                        <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
-                          <p className="text-[10px] text-blue-300 leading-relaxed italic">
-                            Tip: If "results" is empty, the ArcGIS server has no 1m DTM data for this exact coordinate. 
-                            Try panning slightly or zooming in.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
+
                 <AccuracyOvals 
                   pos={pos} 
                   pivots={currentPivots} 
@@ -2389,6 +2380,56 @@ const App: React.FC = () => {
               </MapContainer>
             ) : <div className="flex items-center justify-center h-full w-full text-white/50 animate-pulse">Waiting for location signal...</div>}
           </main>
+
+          {showLidarDebug && (
+            <div className="fixed inset-0 z-[3000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto">
+              <div 
+                onClick={(e) => e.stopPropagation()}
+                className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl overflow-hidden select-text pointer-events-auto"
+                style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+              >
+                <div className="p-6 border-b border-white/5 flex justify-between items-center bg-slate-800/50">
+                  <div className="flex items-center gap-3">
+                    <Cpu size={20} className="text-blue-400" />
+                    <h3 className="text-lg font-black uppercase tracking-tighter">LiDAR Diagnostic Data</h3>
+                  </div>
+                  <button onClick={() => setShowLidarDebug(false)} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-slate-400 active:scale-90 transition-all pointer-events-auto">
+                    <X size={20} />
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-6 space-y-6 font-mono text-xs select-text">
+                  <section className="select-text">
+                    <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Query Coordinates</h4>
+                    <div className="bg-black/40 p-3 rounded-xl border border-white/5 select-text">
+                      Lat: {lidarDebug.coords?.lat.toFixed(6)}<br />
+                      Lng: {lidarDebug.coords?.lng.toFixed(6)}
+                    </div>
+                  </section>
+                  <section className="select-text">
+                    <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Request URL</h4>
+                    <div className="bg-black/40 p-3 rounded-xl border border-white/5 break-all text-[10px] leading-relaxed select-text">
+                      {lidarDebug.url}
+                    </div>
+                  </section>
+                  <section className="select-text">
+                    <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Server Response</h4>
+                    <pre 
+                      className="bg-black/40 p-3 rounded-xl border border-white/5 overflow-x-auto whitespace-pre-wrap leading-relaxed select-text cursor-text"
+                      style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+                    >
+                      {JSON.stringify(lidarDebug.response, null, 2)}
+                    </pre>
+                  </section>
+                  <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+                    <p className="text-[10px] text-blue-300 leading-relaxed italic">
+                      Tip: If "results" is empty, the server has no LiDAR data for this exact coordinate. 
+                      Try panning slightly or zooming in.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="absolute inset-x-0 bottom-0 z-[1000] p-4 pointer-events-none flex flex-col gap-2 items-center pb-12">
             <div className="flex flex-col gap-2 w-full max-w-[340px]">
               <div className="pointer-events-auto bg-slate-900/95 border border-white/20 rounded-[2.8rem] px-6 py-4 w-full shadow-2xl backdrop-blur-md select-text">

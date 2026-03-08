@@ -25,13 +25,14 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing lat/lng' });
       }
 
-      const coverageId = 'scotland:lidar-aggregate';
+      const coverageId = 'scotland__scotland-lidar-6-dtm';
       const wcsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
       const params = {
         service: 'WCS',
         version: '2.0.1',
         request: 'GetCoverage',
         coverageId: coverageId,
+        subsettingCrs: 'http://www.opengis.net/def/crs/EPSG/0/4326',
         subset: [
           `Long(${Number(lng)})`,
           `Lat(${Number(lat)})`
