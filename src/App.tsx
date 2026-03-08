@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Polyline, Circle, useMap, Polygon, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, WMSTileLayer, CircleMarker, Polyline, Circle, useMap, Polygon, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import { 
   ChevronLeft,
@@ -862,8 +862,9 @@ const AccuracyOvals: React.FC<{
 };
 
 const MapController: React.FC<{ 
-  pos: GeoPoint | null, active: boolean, mapPoints: GeoPoint[], completed: boolean, viewingRecord: SavedRecord | null, mode: AppView, trkPoints: GeoPoint[], isFollowing: boolean, setIsFollowing: (v: boolean) => void
-}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing }) => {
+  pos: GeoPoint | null, active: boolean, mapPoints: GeoPoint[], completed: boolean, viewingRecord: SavedRecord | null, mode: AppView, trkPoints: GeoPoint[], isFollowing: boolean, setIsFollowing: (v: boolean) => void,
+  onMapMove?: (lat: number, lng: number) => void
+}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove }) => {
   const map = useMap();
   const lastViewId = useRef<string | null>(null);
   const hasInitialLock = useRef(false);
@@ -872,7 +873,13 @@ const MapController: React.FC<{
 
 useMapEvents({
     dragstart: () => { setIsFollowing(false); },
-    zoomstart: () => { setIsFollowing(false); }
+    zoomstart: () => { setIsFollowing(false); },
+    moveend: () => {
+      if (onMapMove) {
+        const center = map.getCenter();
+        onMapMove(center.lat, center.lng);
+      }
+    }
   });
 
 useEffect(() => {
@@ -1620,6 +1627,7 @@ const App: React.FC = () => {
   const [isBunker, setIsBunker] = useState(false);
   const [ovalMode, setOvalMode] = useState<OvalMode>('off');
   const [isFollowing, setIsFollowing] = useState(true);
+  const [mapCenter, setMapCenter] = useState<GeoPoint | null>(null);
   const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available'>('idle');
   const [lidarLayerLoading, setLidarLayerLoading] = useState(false);
   const [reportGreens, setReportGreens] = useState<SavedRecord[]>([]);
@@ -1627,6 +1635,15 @@ const App: React.FC = () => {
   const CONCAVITY_FIXED = 0.82;
   const greenStartRef = useRef<GeoPoint | null>(null);
   const lidarFetchRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!isFollowing && mapCenter && mapStyle === 'LiDAR DTM') {
+      const timer = setTimeout(() => {
+        fetchLidarElevation(mapCenter.lat, mapCenter.lng);
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [mapCenter, isFollowing, mapStyle]);
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
     setLidarStatus('loading');
@@ -2172,17 +2189,40 @@ const App: React.FC = () => {
           <main className="flex-1">
             {(pos || viewingRecord) ? (
               <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
-                <TileLayer 
-                  url={mapStyle === 'Street' ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" : mapStyle === 'Satellite' ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" : "https://map.gov.scot/arcgis/rest/services/Public/Lidar_DTM_1m/MapServer/tile/{z}/{y}/{x}"} 
-                  maxZoom={22} 
-                  maxNativeZoom={19} 
-                  eventHandlers={{
-                    loading: () => { if (mapStyle === 'LiDAR DTM') setLidarLayerLoading(true); },
-                    load: () => { setLidarLayerLoading(false); },
-                    tileerror: () => { if (mapStyle === 'LiDAR DTM') setLidarStatus('error'); }
-                  }}
+                {mapStyle === 'LiDAR DTM' ? (
+                  <WMSTileLayer
+                    url="https://map.gov.scot/arcgis/services/Public/Lidar_DTM_1m/MapServer/WMSServer"
+                    layers="0"
+                    format="image/png"
+                    transparent={true}
+                    version="1.3.0"
+                    maxZoom={22}
+                    eventHandlers={{
+                      loading: () => { setLidarLayerLoading(true); },
+                      load: () => { setLidarLayerLoading(false); },
+                      tileerror: () => { setLidarStatus('error'); }
+                    }}
+                  />
+                ) : (
+                  <TileLayer 
+                    url={mapStyle === 'Street' ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"} 
+                    maxZoom={22} 
+                    maxNativeZoom={19} 
+                  />
+                )}
+                <MapController 
+                  key={mapLockKey} 
+                  pos={pos} 
+                  active={trkActive || mapActive} 
+                  mapPoints={mapPoints} 
+                  completed={mapCompleted} 
+                  viewingRecord={viewingRecord} 
+                  mode={view} 
+                  trkPoints={trkPoints} 
+                  isFollowing={isFollowing} 
+                  setIsFollowing={setIsFollowing}
+                  onMapMove={(lat, lng) => setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null })}
                 />
-                <MapController key={mapLockKey} pos={pos} active={trkActive || mapActive} mapPoints={mapPoints} completed={mapCompleted} viewingRecord={viewingRecord} mode={view} trkPoints={trkPoints} isFollowing={isFollowing} setIsFollowing={setIsFollowing}/>
                 
                 {mapStyle === 'LiDAR DTM' && (
                   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-none">
