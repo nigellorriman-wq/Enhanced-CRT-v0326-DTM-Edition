@@ -873,7 +873,6 @@ const MapController: React.FC<{
 
 useMapEvents({
     dragstart: () => { setIsFollowing(false); },
-    zoomstart: () => { setIsFollowing(false); },
     moveend: () => {
       if (onMapMove) {
         const center = map.getCenter();
@@ -917,13 +916,11 @@ useEffect(() => {
       const bounds = L.latLngBounds(trkPoints.map(p => [p.lat, p.lng]));
       map.fitBounds(bounds, { padding: [40, 40], paddingBottomRight: [40, 280], animate: true });
     } else if (pos) {
-      // If following is enabled, update view if:
-      // 1. Initial lock hasn't happened
-      // 2. Accuracy improved significantly (e.g. IP -> WiFi/GPS)
-      // 3. We are in an active session
       const accuracyImproved = pos.accuracy < prevPosAccuracy.current * 0.7;
+      const currentCenter = map.getCenter();
+      const distMoved = L.latLng(pos.lat, pos.lng).distanceTo(currentCenter);
       
-      if (!hasInitialLock.current || accuracyImproved || active) {
+      if (!hasInitialLock.current || accuracyImproved || (active && distMoved > 1)) {
         const targetZoom = (map.getZoom() < 10 || accuracyImproved) ? 19 : map.getZoom();
         map.setView([pos.lat, pos.lng], targetZoom, { animate: true });
         hasInitialLock.current = true;
@@ -1643,11 +1640,10 @@ const App: React.FC = () => {
     if (!isFollowing && mapCenter) {
       const timer = setTimeout(async () => {
         const alt = await fetchLidarElevation(mapCenter.lat, mapCenter.lng);
-        // If we are NOT following GPS, we treat the map center as our "virtual" position
-        // This is perfect for PC users or when GPS is bad.
         setPos(prev => {
-          // Only update if we are still not following
           if (isFollowing) return prev;
+          // Only update if moved more than 0.5m to avoid jitter
+          if (prev && L.latLng(prev.lat, prev.lng).distanceTo(L.latLng(mapCenter.lat, mapCenter.lng)) < 0.5 && prev.alt === alt) return prev;
           return {
             lat: mapCenter.lat,
             lng: mapCenter.lng,
@@ -1860,7 +1856,7 @@ const App: React.FC = () => {
     );
 
     return () => navigator.geolocation.clearWatch(watch);
-  }, [locationResetKey, isFollowing]);
+  }, [locationResetKey]);
 
   const saveRecord = useCallback((record: Omit<SavedRecord, 'id' | 'date'>) => {
     const newRecord: SavedRecord = { ...record, id: Math.random().toString(36).substr(2, 9), date: Date.now() };
