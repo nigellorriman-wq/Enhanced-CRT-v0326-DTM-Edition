@@ -891,7 +891,7 @@ const MapController: React.FC<{
 
 useMapEvents({
     dragstart: () => { setIsFollowing(false); },
-    moveend: () => {
+    move: () => {
       if (onMapMove) {
         const center = map.getCenter();
         onMapMove(center.lat, center.lng);
@@ -1616,8 +1616,8 @@ const App: React.FC = () => {
         const alt = await fetchLidarElevation(mapCenter.lat, mapCenter.lng);
         setPos(prev => {
           if (isFollowing) return prev;
-          // Only update if moved more than 0.5m to avoid jitter
-          if (prev && L.latLng(prev.lat, prev.lng).distanceTo(L.latLng(mapCenter.lat, mapCenter.lng)) < 0.5 && prev.alt === alt) return prev;
+          // Only update if moved more than 0.2m to avoid jitter
+          if (prev && L.latLng(prev.lat, prev.lng).distanceTo(L.latLng(mapCenter.lat, mapCenter.lng)) < 0.2 && prev.alt === alt) return prev;
           return {
             lat: mapCenter.lat,
             lng: mapCenter.lng,
@@ -1628,7 +1628,7 @@ const App: React.FC = () => {
             source: 'Manual/LiDAR'
           };
         });
-      }, 500);
+      }, 250);
       return () => clearTimeout(timer);
     }
   }, [mapCenter, isFollowing]);
@@ -1807,6 +1807,32 @@ const App: React.FC = () => {
 
     return () => navigator.geolocation.clearWatch(watch);
   }, [locationResetKey]);
+
+  // Fix: Ensure track points are updated and start altitude is captured correctly
+  useEffect(() => {
+    if (trkActive && pos) {
+      setTrkPoints(prev => {
+        if (prev.length === 0) return [pos];
+        const last = prev[prev.length - 1];
+        const dist = L.latLng(last.lat, last.lng).distanceTo(L.latLng(pos.lat, pos.lng));
+        
+        // If the last point has no altitude but the current pos does, update the last point
+        // This is crucial for LiDAR where the fetch might finish after tracking starts
+        if (last.alt === null && pos.alt !== null && dist < 1) {
+          const updated = [...prev];
+          updated[updated.length - 1] = { ...last, alt: pos.alt, altAccuracy: pos.altAccuracy, source: pos.source };
+          return updated;
+        }
+
+        // In manual mode (not following), we want to record the path as the user pans
+        if (!isFollowing && dist > 2) {
+          return [...prev, pos];
+        }
+        
+        return prev;
+      });
+    }
+  }, [pos, trkActive, isFollowing]);
 
   const saveRecord = useCallback((record: Omit<SavedRecord, 'id' | 'date'>) => {
     const newRecord: SavedRecord = { ...record, id: Math.random().toString(36).substr(2, 9), date: Date.now() };
@@ -2261,6 +2287,17 @@ const App: React.FC = () => {
                   onMapMove={(lat, lng) => setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null })}
                   onZoomChange={setCurrentZoom}
                 />
+
+                {/* Precision Crosshair for Manual Panning */}
+                {!isFollowing && (
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[1000] pointer-events-none">
+                    <div className="relative flex items-center justify-center">
+                      <div className="absolute w-10 h-[1px] bg-white/60"></div>
+                      <div className="absolute h-10 w-[1px] bg-white/60"></div>
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]"></div>
+                    </div>
+                  </div>
+                )}
                 
                 {mapStyle === 'LiDAR DTM' && (
                   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-none">
