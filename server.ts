@@ -31,22 +31,26 @@ async function startServer() {
 
       const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
       
-      // Use WMS GetFeatureInfo which is more robust for aggregate layers
+      // Use WMS GetFeatureInfo on the same layers used for the map overlay
       const params = new URLSearchParams();
       params.append('service', 'WMS');
-      params.append('version', '1.1.1');
+      params.append('version', '1.3.0');
       params.append('request', 'GetFeatureInfo');
-      params.append('layers', 'scotland:lidar-aggregate');
-      params.append('query_layers', 'scotland:lidar-aggregate');
-      params.append('x', '50');
-      params.append('y', '50');
+      // Query all phases to ensure coverage
+      const layers = 'scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
+      params.append('layers', layers);
+      params.append('query_layers', layers);
+      params.append('i', '50');
+      params.append('j', '50');
       params.append('width', '101');
       params.append('height', '101');
-      params.append('srs', 'EPSG:4326');
+      params.append('crs', 'CRS:84');
       
-      const delta = 0.0001;
+      // Slightly larger delta for better reliability at high zoom
+      const delta = 0.0005; 
       const lngNum = Number(lng);
       const latNum = Number(lat);
+      // CRS:84 is always lon,lat
       params.append('bbox', `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`);
       params.append('info_format', 'application/json');
       params.append('feature_count', '1');
@@ -59,14 +63,20 @@ async function startServer() {
         headers: { 'Accept': 'application/json' }
       });
       
-      console.log(`[LiDAR API] Response received`);
+      console.log(`[LiDAR API] Response received, features: ${response.data?.features?.length}`);
       
       // Extract elevation from GeoServer JSON response
       let elevation = null;
       if (response.data && response.data.features && response.data.features.length > 0) {
-        const props = response.data.features[0].properties;
-        // Look for common elevation property names
-        elevation = props.GRAY_INDEX ?? props.value ?? props.Value ?? props.elevation ?? props.ELEVATION;
+        // Find the first feature that has a valid elevation property
+        for (const feature of response.data.features) {
+          const props = feature.properties;
+          const val = props.GRAY_INDEX ?? props.value ?? props.Value ?? props.elevation ?? props.ELEVATION;
+          if (val !== null && val !== undefined && !isNaN(parseFloat(val))) {
+            elevation = val;
+            break;
+          }
+        }
       }
 
       if (elevation !== null && elevation !== undefined) {
