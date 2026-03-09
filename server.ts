@@ -29,30 +29,51 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing lat/lng' });
       }
 
-      const coverageId = 'scotland:lidar-aggregate';
-      const wcsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
+      const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
       
-      // WCS 2.0.1 subsetting for a point
-      // We use subsettingCrs=EPSG:4326 so we can use Lat/Long directly
+      // Use WMS GetFeatureInfo which is more robust for aggregate layers
       const params = new URLSearchParams();
-      params.append('service', 'WCS');
-      params.append('version', '2.0.1');
-      params.append('request', 'GetCoverage');
-      params.append('coverageId', coverageId);
-      params.append('subsettingCrs', 'http://www.opengis.net/def/crs/EPSG/0/4326');
-      params.append('subset', `Long(${Number(lng)})`);
-      params.append('subset', `Lat(${Number(lat)})`);
-      params.append('format', 'text/plain');
+      params.append('service', 'WMS');
+      params.append('version', '1.1.1');
+      params.append('request', 'GetFeatureInfo');
+      params.append('layers', 'scotland:lidar-aggregate');
+      params.append('query_layers', 'scotland:lidar-aggregate');
+      params.append('x', '50');
+      params.append('y', '50');
+      params.append('width', '101');
+      params.append('height', '101');
+      params.append('srs', 'EPSG:4326');
+      
+      const delta = 0.0001;
+      const lngNum = Number(lng);
+      const latNum = Number(lat);
+      params.append('bbox', `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`);
+      params.append('info_format', 'application/json');
+      params.append('feature_count', '1');
 
-      console.log(`[LiDAR API] Fetching from WCS: ${wcsUrl}?${params.toString()}`);
+      console.log(`[LiDAR API] Fetching from WMS GetFeatureInfo: ${wmsUrl}?${params.toString()}`);
 
-      const response = await axios.get(wcsUrl, { 
+      const response = await axios.get(wmsUrl, { 
         params: params,
-        timeout: 10000
+        timeout: 10000,
+        headers: { 'Accept': 'application/json' }
       });
       
-      console.log(`[LiDAR API] WCS Response received, length: ${response.data?.length}`);
-      res.json({ elevation: response.data });
+      console.log(`[LiDAR API] Response received`);
+      
+      // Extract elevation from GeoServer JSON response
+      let elevation = null;
+      if (response.data && response.data.features && response.data.features.length > 0) {
+        const props = response.data.features[0].properties;
+        // Look for common elevation property names
+        elevation = props.GRAY_INDEX ?? props.value ?? props.Value ?? props.elevation ?? props.ELEVATION;
+      }
+
+      if (elevation !== null && elevation !== undefined) {
+        res.json({ elevation });
+      } else {
+        res.status(404).json({ error: 'No elevation data found at this location' });
+      }
     } catch (error: any) {
       console.error('[LiDAR API] Error:', error.message);
       if (error.response) {

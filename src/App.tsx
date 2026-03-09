@@ -2220,23 +2220,26 @@ const App: React.FC = () => {
                 />
                 {mapStyle === 'LiDAR DTM' && (
                   <WMSTileLayer
+                    key="lidar-layer"
                     url="https://srsp-ows.jncc.gov.uk/ows"
-                    layers="scotland:lidar-aggregate"
-                    styles="scotland:lidar-dem-viridis"
+                    layers="scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm"
+                    styles="scotland:lidar-dem-viridis,scotland:lidar-dem-viridis,scotland:lidar-dem-viridis,scotland:lidar-dem-viridis,scotland:lidar-dem-viridis,scotland:lidar-dem-viridis"
                     format="image/png"
                     transparent={true}
                     version="1.3.0"
                     opacity={0.6}
                     maxZoom={22}
+                    maxNativeZoom={18}
                     minZoom={10}
                     eventHandlers={{
                       loading: () => { setLidarLayerLoading(true); },
                       load: () => { 
                         setLidarLayerLoading(false); 
                         tilesLoadedCount.current += 1;
-                        if (lidarStatus !== 'available') setLidarStatus('available');
+                        setLidarStatus('available');
                       },
                       tileerror: () => { 
+                        // Only set error if we haven't loaded ANY tiles yet
                         if (tilesLoadedCount.current === 0) {
                           setLidarStatus('error'); 
                         }
