@@ -36,7 +36,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         <button onClick={onClose} className="p-2 bg-slate-800 rounded-full text-slate-400 active:scale-90 transition-all"><X size={20} /></button>
       </header>
 
-      <p className="text-slate-400 text-xs mb-6 px-1 leading-relaxed">
+      <p className="text-white-400 text-xs mb-6 px-1 leading-relaxed">
         Pre-visit analysis tool. Search for a course to begin planning your rating walk or green mapping.
       </p>
 
@@ -84,7 +84,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
               </div>
               <div className="text-left">
                 <h3 className="font-bold text-sm text-white leading-tight">{course.site_name}</h3>
-                <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-0.5">{course.town}</p>
+                <p className="text-[10px] text-yellow-500 uppercase tracking-widest mt-0.5">{course.town}</p>
               </div>
             </div>
             <ChevronRight size={16} className="text-slate-700" />
@@ -99,7 +99,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         )}
         
         {!search && !selectedCourse && (
-          <p className="text-center text-slate-600 text-[10px] uppercase tracking-[0.2em] mt-4">Start typing to search golf courses</p>
+          <p className="text-center text-white-700 text-[10px] uppercase tracking-[0.2em] mt-4">Start typing to search golf courses</p>
         )}
 
         {selectedCourse && (
@@ -108,8 +108,8 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
               <MapPin size={32} />
             </div>
             <h3 className="text-xl font-bold text-white mb-1">{selectedCourse.site_name}</h3>
-            <p className="text-blue-400 text-xs font-bold uppercase tracking-widest mb-6">{selectedCourse.town}</p>
-            <p className="text-slate-400 text-[10px] leading-relaxed max-w-[200px]">
+            <p className="text-blue-400 text-xs font-bold uppercase tracking-widest mb-6">{selectedCourse.town}</p>         
+            <p className="text-yellow-600 text-[12px] leading-relaxed max-w-[200px]">
               Ready to analyze this course? Hit the GO button above to load LiDAR terrain data.
             </p>
           </div>

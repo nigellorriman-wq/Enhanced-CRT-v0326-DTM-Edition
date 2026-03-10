@@ -4,6 +4,7 @@ import L from 'leaflet';
 import { 
   ChevronLeft,
   Navigation2,
+  LampDesk,
   Layers,
   Target,
   Trash2,
@@ -2140,12 +2141,7 @@ const App: React.FC = () => {
             <button onClick={() => { setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><Navigation2 size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
-              <p className="text-slate-400 text-[11px] font-medium text-center max-w-[220px]">Real-time distance measurement and elevation change</p>
-            </button>
-            <button onClick={() => { setViewingRecord(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
-              <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-6 shadow-xl border border-blue-500/20"><Search size={28} className="text-blue-400" /></div>
-              <h2 className="text-2xl font-bold mb-2 uppercase text-blue-400">Course Planning</h2>
-              <p className="text-slate-400 text-[11px] font-medium text-center max-w-[220px]">Pre-visit analysis and course search</p>
+              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Real-time distance measurement and elevation change</p>
             </button>
             <div className="bg-slate-900/50 border border-white/5 rounded-[1.8rem] py-4 px-6 flex justify-around items-center">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rating For:</span>
@@ -2157,26 +2153,34 @@ const App: React.FC = () => {
             <button onClick={() => { setViewingRecord(null); setMapPoints([]); setMapCompleted(false); setView('green'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-emerald-600/40"><Target size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-emerald-500">Green Mapper</h2>
-              <p className="text-slate-400 text-[11px] font-medium text-center max-w-[220px]">Green mapping and Effective Green Diameter</p>
+              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Green mapping and Effective Green Diameter</p>
             </button>
+
+
+            <button onClick={() => { setViewingRecord(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+              <div className="w-16 h-16 bg-yellow-500/80 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-yellow-600/40"><LampDesk size={28} className="text-white-600" /></div>
+              <h2 className="text-2xl font-bold mb-2 uppercase text-yellow-500">Course Planning</h2>
+              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Pre-visit course search for LiDAR data</p>
+            </button>
+
             <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer">
               <div className="w-16 h-16 bg-rose-700 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-rose-700/40"><FileText size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-rose-700">Green Report Tool</h2>
-              <p className="text-slate-400 text-[11px] font-medium text-center max-w-[220px]">Batch process KML greens into PDF reports</p>
+              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Batch process KML greens into PDF reports</p>
               <input type="file" accept=".kml" onChange={importKMLForReport} className="hidden" />
             </label>
             <button onClick={() => { setViewingRecord(null); setView('stimp'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-6 shadow-xl border border-blue-500/20"><Gauge size={28} className="text-lime-500" /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-lime-400">Stimp Slopes</h2>
-              <p className="text-slate-400 text-[11px] font-medium text-center max-w-[220px]">Speed correction for sloping greens</p>
+              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Speed correction for sloping greens</p>
             </button>
             <button onClick={() => setView('manual')} className="mt-2 bg-slate-800/50 border border-white/10 rounded-[1.8rem] py-6 flex items-center justify-center gap-4 active:bg-slate-700 transition-colors">
               <BookOpen size={20} className="text-blue-400" />
-              <span className="text-[11px] font-bold uppercase tracking-widest text-white">User Manual</span>
+              <span className="text-[13px] font-bold uppercase tracking-widest text-white">User Manual</span>
             </button>
             <button onClick={() => setView('wcs')} className="mt-2 bg-slate-800/50 border border-white/10 rounded-[1.8rem] py-6 flex items-center justify-center gap-4 active:bg-slate-700 transition-colors">
               <Layers size={20} className="text-emerald-400" />
-              <span className="text-[11px] font-bold uppercase tracking-widest text-white">WCS Capabilities Analysis</span>
+              <span className="text-[13px] font-bold uppercase tracking-widest text-white">WCS Capabilities Analysis</span>
             </button>
             <div className="flex gap-4 mt-2">
                <button onClick={exportKML} className="flex-1 bg-slate-800/50 border border-blue-500/20 rounded-[1.8rem] py-6 flex items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-lg"><Download size={18} className="text-blue-500" /><span className="text-[10px] font-bold uppercase tracking-widest text-white">Export</span></button>
