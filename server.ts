@@ -44,14 +44,14 @@ async function startServer() {
       params.append('j', '50');
       params.append('width', '101');
       params.append('height', '101');
-      params.append('crs', 'CRS:84');
+      params.append('crs', 'EPSG:4326');
       
       // Slightly larger delta for better reliability at high zoom
       const delta = 0.0005; 
       const lngNum = Number(lng);
       const latNum = Number(lat);
-      // CRS:84 is always lon,lat
-      params.append('bbox', `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`);
+      // EPSG:4326 in WMS 1.3.0 is lat,lon
+      params.append('bbox', `${latNum - delta},${lngNum - delta},${latNum + delta},${lngNum + delta}`);
       params.append('info_format', 'application/json');
       params.append('feature_count', '1');
 

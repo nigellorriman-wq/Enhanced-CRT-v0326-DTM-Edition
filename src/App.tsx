@@ -881,8 +881,10 @@ const AccuracyOvals: React.FC<{
 const MapController: React.FC<{ 
   pos: GeoPoint | null, active: boolean, mapPoints: GeoPoint[], completed: boolean, viewingRecord: SavedRecord | null, mode: AppView, trkPoints: GeoPoint[], isFollowing: boolean, setIsFollowing: (v: boolean) => void,
   onMapMove?: (lat: number, lng: number) => void,
-  onZoomChange?: (zoom: number) => void
-}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove, onZoomChange }) => {
+  onZoomChange?: (zoom: number) => void,
+  onMapClick?: () => void,
+  isTouchDevice: boolean
+}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove, onZoomChange, onMapClick, isTouchDevice }) => {
   const map = useMap();
   const lastViewId = useRef<string | null>(null);
   const hasInitialLock = useRef(false);
@@ -891,6 +893,11 @@ const MapController: React.FC<{
 
 useMapEvents({
     dragstart: () => { setIsFollowing(false); },
+    click: () => {
+      if (active && mode === 'track' && !isFollowing && !isTouchDevice) {
+        onMapClick?.();
+      }
+    },
     move: () => {
       if (onMapMove) {
         const center = map.getCenter();
@@ -1573,6 +1580,7 @@ const App: React.FC = () => {
   const [viewingRecord, setViewingRecord] = useState<SavedRecord | null>(null);
   const [viewingTrackProfile, setViewingTrackProfile] = useState<TrackProfileView>('Rater\'s Walk');
   const [mapLockKey, setMapLockKey] = useState(0);
+  const [isTouchDevice] = useState(() => typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0));
   const [locationResetKey, setLocationResetKey] = useState(0);
   const [trkActive, setTrkActive] = useState(false);
   const [trkPoints, setTrkPoints] = useState<GeoPoint[]>([]);
@@ -1781,20 +1789,19 @@ const App: React.FC = () => {
         setGpsError(null);
         if (isFollowing) {
           handleUpdate(p);
-          if (viewRef.current === 'track') {
-            const currentTs = Date.now();
-            lidarFetchRef.current = currentTs;
-            const lidarAlt = await fetchLidarElevation(p.coords.latitude, p.coords.longitude);
-            if (lidarFetchRef.current === currentTs && lidarAlt !== null) {
-              const LIDAR_ACCURACY = 0.2;
-              setPos(prev => {
-                if (!prev || prev.timestamp > currentTs || !isFollowing) return prev;
-                if (prev.altAccuracy === null || prev.altAccuracy > LIDAR_ACCURACY) {
-                  return { ...prev, alt: lidarAlt, altAccuracy: LIDAR_ACCURACY, source: 'LiDAR' };
-                }
-                return prev;
-              });
-            }
+          // Always try to fetch LiDAR elevation when following to improve GNSS altitude
+          const currentTs = Date.now();
+          lidarFetchRef.current = currentTs;
+          const lidarAlt = await fetchLidarElevation(p.coords.latitude, p.coords.longitude);
+          if (lidarFetchRef.current === currentTs && lidarAlt !== null) {
+            const LIDAR_ACCURACY = 0.2;
+            setPos(prev => {
+              if (!prev || prev.timestamp > currentTs || !isFollowing) return prev;
+              if (prev.altAccuracy === null || prev.altAccuracy > LIDAR_ACCURACY) {
+                return { ...prev, alt: lidarAlt, altAccuracy: LIDAR_ACCURACY, source: 'LiDAR' };
+              }
+              return prev;
+            });
           }
         }
       },
@@ -1825,7 +1832,8 @@ const App: React.FC = () => {
         }
 
         // In manual mode (not following), we want to record the path as the user pans
-        if (!isFollowing && dist > 2) {
+        // On PC, we wait for clicks instead of auto-recording
+        if (!isFollowing && isTouchDevice && dist > 2) {
           return [...prev, pos];
         }
         
@@ -1960,7 +1968,9 @@ const App: React.FC = () => {
   const elevMult = units === 'Yards' ? 3.28084 : 1.0;
 
   const effectiveMetrics = useMemo(() => {
-    const currentRaterPath = [...trkPoints, ...(trkActive && pos ? [pos] : [])].filter(Boolean) as GeoPoint[];
+    // On PC manual mode, we only show path between clicked points (no rubber-band)
+    const showRubberBand = isFollowing || isTouchDevice;
+    const currentRaterPath = [...trkPoints, ...(trkActive && pos && showRubberBand ? [pos] : [])].filter(Boolean) as GeoPoint[];
     const pivs = viewingRecord ? (viewingRecord.pivotPoints || []) : currentPivots;
     const targetPoint = viewingRecord ? (viewingRecord.raterPathPoints ? viewingRecord.raterPathPoints[viewingRecord.raterPathPoints.length - 1] : null) : (trkActive ? pos : (trkPoints.length > 0 ? trkPoints[trkPoints.length-1] : null));
 
@@ -2234,9 +2244,10 @@ const App: React.FC = () => {
               <button onClick={() => setMapStyle(s => s === 'Street' ? 'Satellite' : s === 'Satellite' ? 'LiDAR DTM' : 'Street')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-blue-400 shadow-2xl active:scale-90"><Layers size={20} /></button>
             </div>
           </div>
-          <main className="flex-1">
+          <main className="flex-1 relative">
             {(pos || viewingRecord) ? (
-              <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
+              <>
+                <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
                 <TileLayer 
                   url={(mapStyle === 'Satellite' || mapStyle === 'LiDAR DTM') 
                     ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" 
@@ -2286,19 +2297,10 @@ const App: React.FC = () => {
                   setIsFollowing={setIsFollowing}
                   onMapMove={(lat, lng) => setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null })}
                   onZoomChange={setCurrentZoom}
+                  onMapClick={() => { if (pos) setTrkPoints(prev => [...prev, pos]); }}
+                  isTouchDevice={isTouchDevice}
                 />
 
-                {/* Precision Crosshair for Manual Panning */}
-                {!isFollowing && (
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[1000] pointer-events-none">
-                    <div className="relative flex items-center justify-center">
-                      <div className="absolute w-10 h-[1px] bg-white/60"></div>
-                      <div className="absolute h-10 w-[1px] bg-white/60"></div>
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]"></div>
-                    </div>
-                  </div>
-                )}
-                
                 {mapStyle === 'LiDAR DTM' && (
                   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-none">
                     {currentZoom < 10 ? (
@@ -2428,6 +2430,18 @@ const App: React.FC = () => {
                   </>
                 )}
               </MapContainer>
+              {!isFollowing && (
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[2000] pointer-events-none">
+                  <div className="relative flex items-center justify-center">
+                    <div className="absolute w-12 h-[1px] bg-white/40"></div>
+                    <div className="absolute h-12 w-[1px] bg-white/40"></div>
+                    <div className="w-2 h-2 rounded-full border border-white/60 flex items-center justify-center">
+                      <div className="w-1 h-1 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]"></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              </>
             ) : <div className="flex items-center justify-center h-full w-full text-white/50 animate-pulse">Waiting for location signal...</div>}
           </main>
 
