@@ -39,16 +39,19 @@ import {
   FileText,
   Printer,
   ChevronRight,
-  Settings
+  Settings,
+  Search
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 
 import { WCSAnalyzer } from './components/WCSAnalyzer';
 
+import { CoursePlanning } from './components/CoursePlanning';
+
 /** --- TYPES --- **/
 // Fix: Renamed View to AppView to resolve "Cannot find name 'AppView'" errors on lines 839 and 1069
-type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs';
+type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs' | 'planning';
 type UnitSystem = 'Yards' | 'Metres';
 type FontSize = 'small' | 'medium' | 'large';
 type RatingGender = 'Men' | 'Women'; 
@@ -881,10 +884,8 @@ const AccuracyOvals: React.FC<{
 const MapController: React.FC<{ 
   pos: GeoPoint | null, active: boolean, mapPoints: GeoPoint[], completed: boolean, viewingRecord: SavedRecord | null, mode: AppView, trkPoints: GeoPoint[], isFollowing: boolean, setIsFollowing: (v: boolean) => void,
   onMapMove?: (lat: number, lng: number) => void,
-  onZoomChange?: (zoom: number) => void,
-  onMapClick?: () => void,
-  isTouchDevice: boolean
-}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove, onZoomChange, onMapClick, isTouchDevice }) => {
+  onZoomChange?: (zoom: number) => void
+}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove, onZoomChange }) => {
   const map = useMap();
   const lastViewId = useRef<string | null>(null);
   const hasInitialLock = useRef(false);
@@ -893,11 +894,6 @@ const MapController: React.FC<{
 
 useMapEvents({
     dragstart: () => { setIsFollowing(false); },
-    click: () => {
-      if (active && mode === 'track' && !isFollowing && !isTouchDevice) {
-        onMapClick?.();
-      }
-    },
     move: () => {
       if (onMapMove) {
         const center = map.getCenter();
@@ -1968,9 +1964,7 @@ const App: React.FC = () => {
   const elevMult = units === 'Yards' ? 3.28084 : 1.0;
 
   const effectiveMetrics = useMemo(() => {
-    // On PC manual mode, we only show path between clicked points (no rubber-band)
-    const showRubberBand = isFollowing || isTouchDevice;
-    const currentRaterPath = [...trkPoints, ...(trkActive && pos && showRubberBand ? [pos] : [])].filter(Boolean) as GeoPoint[];
+    const currentRaterPath = [...trkPoints, ...(trkActive && pos ? [pos] : [])].filter(Boolean) as GeoPoint[];
     const pivs = viewingRecord ? (viewingRecord.pivotPoints || []) : currentPivots;
     const targetPoint = viewingRecord ? (viewingRecord.raterPathPoints ? viewingRecord.raterPathPoints[viewingRecord.raterPathPoints.length - 1] : null) : (trkActive ? pos : (trkPoints.length > 0 ? trkPoints[trkPoints.length-1] : null));
 
@@ -2148,6 +2142,11 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
               <p className="text-slate-400 text-[11px] font-medium text-center max-w-[220px]">Real-time distance measurement and elevation change</p>
             </button>
+            <button onClick={() => { setViewingRecord(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+              <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-6 shadow-xl border border-blue-500/20"><Search size={28} className="text-blue-400" /></div>
+              <h2 className="text-2xl font-bold mb-2 uppercase text-blue-400">Course Planning</h2>
+              <p className="text-slate-400 text-[11px] font-medium text-center max-w-[220px]">Pre-visit analysis and course search</p>
+            </button>
             <div className="bg-slate-900/50 border border-white/5 rounded-[1.8rem] py-4 px-6 flex justify-around items-center">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rating For:</span>
                 <div className="flex bg-slate-800 rounded-full p-1 border border-white/10">
@@ -2212,6 +2211,17 @@ const App: React.FC = () => {
         <ReportView greens={reportGreens} fileName={reportFileName} onClose={() => setView('landing')} units={units} />
       ) : view === 'wcs' ? (
         <WCSAnalyzer onBack={() => setView('landing')} />
+      ) : view === 'planning' ? (
+        <CoursePlanning 
+          onClose={() => setView('landing')} 
+          onSelect={(lat, lng) => {
+            setIsFollowing(false);
+            setMapStyle('LiDAR DTM');
+            setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
+            setPos({ lat, lng, accuracy: 0.5, timestamp: Date.now(), alt: null, altAccuracy: null, source: 'Manual' });
+            setView('track');
+          }} 
+        />
       ) : (
         <div className="flex-1 flex flex-col relative animate-in slide-in-from-right duration-300">
           <div className="absolute top-0 left-0 right-0 z-[1000] p-4 flex justify-between pointer-events-none">
@@ -2297,8 +2307,6 @@ const App: React.FC = () => {
                   setIsFollowing={setIsFollowing}
                   onMapMove={(lat, lng) => setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null })}
                   onZoomChange={setCurrentZoom}
-                  onMapClick={() => { if (pos) setTrkPoints(prev => [...prev, pos]); }}
-                  isTouchDevice={isTouchDevice}
                 />
 
                 {mapStyle === 'LiDAR DTM' && (
