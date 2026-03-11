@@ -2063,12 +2063,16 @@ const App: React.FC = () => {
     const sectorScratch = (() => {
       if (!targetPoint) return null;
       const filtered = pivs.filter(p => p.type === 'common' || p.type === 'scratch_cut').sort((a, b) => b.point.timestamp - a.point.timestamp);
-      return filtered.length > 0 ? calculateDistance(filtered[0].point, targetPoint) * distMult : null;
+      if (filtered.length > 0) return calculateDistance(filtered[0].point, targetPoint) * distMult;
+      if (isPlanningSession && trkPoints.length > 0) return calculateDistance(trkPoints[0], targetPoint) * distMult;
+      return null;
     })();
     const sectorBogey = (() => {
       if (!targetPoint) return null;
       const filtered = pivs.filter(p => p.type === 'common' || p.type === 'bogoy_round').sort((a, b) => b.point.timestamp - a.point.timestamp);
-      return filtered.length > 0 ? calculateDistance(filtered[0].point, targetPoint) * distMult : null;
+      if (filtered.length > 0) return calculateDistance(filtered[0].point, targetPoint) * distMult;
+      if (isPlanningSession && trkPoints.length > 0) return calculateDistance(trkPoints[0], targetPoint) * distMult;
+      return null;
     })();
 
     if (viewingRecord && viewingRecord.type === 'Track' && viewingRecord.effectiveDistances) {
@@ -2080,17 +2084,18 @@ const App: React.FC = () => {
     
     // For Course Planning, we use the recorded path directly
     if (isPlanningSession) {
+      const calculated = calculateEffectivePathsAndMetrics(currentRaterPath, currentPivots, distMult, elevMult);
       const raterPathMetrics = calculatePathDistanceAndElevation(currentRaterPath, distMult, elevMult);
       return { 
         distRater: raterPathMetrics.distance, 
         elevRater: raterPathMetrics.elevation, 
-        distScratch: raterPathMetrics.distance, 
-        elevScratch: raterPathMetrics.elevation, 
-        distBogey: raterPathMetrics.distance, 
-        elevBogey: raterPathMetrics.elevation, 
-        effectivePaths: { scratch: currentRaterPath, bogey: currentRaterPath }, 
-        sectorScratch: null, 
-        sectorBogey: null 
+        distScratch: calculated.effectiveDistances.scratch, 
+        elevScratch: calculated.effectiveElevations.scratch, 
+        distBogey: calculated.effectiveDistances.bogey, 
+        elevBogey: calculated.effectiveElevations.bogey, 
+        effectivePaths: calculated.effectivePaths, 
+        sectorScratch, 
+        sectorBogey 
       };
     }
     
@@ -2115,9 +2120,16 @@ const App: React.FC = () => {
     else { setView('green'); setMapActive(false); setMapCompleted(true); }
   };
 
-  const handleConfirmPivot = useCallback(() => {
-    if (pos && pendingPivotType) { setCurrentPivots(prev => [...prev, { point: pos, type: pendingPivotType }]); setTrkPoints(prev => [...prev, pos]); setPendingPivotType(null); setShowPivotMenu(false); }
-  }, [pos, pendingPivotType]);
+  const handleConfirmPivot = useCallback(async () => {
+    if (pos && pendingPivotType) { 
+      const alt = isPlanningSession ? await fetchLidarElevation(pos.lat, pos.lng) : pos.alt;
+      const pointWithAlt = { ...pos, alt, altAccuracy: alt !== null ? 0.2 : null, source: isPlanningSession ? 'Manual/LiDAR' : pos.source };
+      setCurrentPivots(prev => [...prev, { point: pointWithAlt, type: pendingPivotType }]); 
+      setTrkPoints(prev => [...prev, pointWithAlt]); 
+      setPendingPivotType(null); 
+      setShowPivotMenu(false); 
+    }
+  }, [pos, pendingPivotType, isPlanningSession]);
 
   const handleRecordPoint = useCallback(async () => {
     if (!pos) return;
@@ -2464,13 +2476,13 @@ const App: React.FC = () => {
 
                 <AccuracyOvals 
                   pos={pos} 
-                  pivots={currentPivots} 
+                  pivots={isPlanningSession ? trkPoints.slice(1).map(p => ({ point: p, type: 'common' })) : currentPivots} 
                   startPoint={trkPoints.length > 0 ? trkPoints[0] : null} 
                   gender={ratingGender} 
                   active={view === 'track' && trkActive} 
                   mode={ovalMode} 
                 />
-                {pos && !viewingRecord && (<><Circle center={[pos.lat, pos.lng]} radius={pos.accuracy} pathOptions={{ color: 'transparent', fillColor: getAccuracyColor(pos.accuracy), fillOpacity: 1, weight: 0 }} /><CircleMarker center={[pos.lat, pos.lng]} radius={7} pathOptions={{ color: '#fff', fillColor: '#10b981', fillOpacity: 1, weight: 2.5 }} /></>)}
+                {pos && !viewingRecord && !isPlanningSession && (<><Circle center={[pos.lat, pos.lng]} radius={pos.accuracy} pathOptions={{ color: 'transparent', fillColor: getAccuracyColor(pos.accuracy), fillOpacity: 1, weight: 0 }} /><CircleMarker center={[pos.lat, pos.lng]} radius={7} pathOptions={{ color: '#fff', fillColor: '#10b981', fillOpacity: 1, weight: 2.5 }} /></>)}
                 {view === 'track' && (trkActive || viewingRecord || trkPoints.length > 1) && (
                     <>
                       {/* Pivots markers rendering */}
@@ -2494,11 +2506,10 @@ const App: React.FC = () => {
                         const bogeyPath = effectiveMetrics.effectivePaths?.bogey || [];
                         const raterWalk = trkActive ? [...trkPoints, ...(pos?[pos]:[])] : (viewingRecord ? (viewingRecord.raterPathPoints || []) : trkPoints);
                         
-                        if (viewingTrackProfile === 'Rater\'s Walk' || isPlanningSession) {
+                        if (viewingTrackProfile === 'Rater\'s Walk' || (isPlanningSession && !pathsDiffer)) {
                           return (
                             <>
                               <Polyline positions={raterWalk.map(p => [p.lat, p.lng])} color="#ef4444" weight={5} />
-                              {/* Elevation difference labels for Course Planning */}
                               {isPlanningSession && raterWalk.map((p, idx) => {
                                 if (idx === 0) return null;
                                 const prev = raterWalk[idx - 1];
@@ -2519,7 +2530,6 @@ const App: React.FC = () => {
                                   />
                                 );
                               })}
-                              {/* Preview line from last point to crosshair */}
                               {trkActive && isPlanningSession && trkPoints.length > 0 && mapCenter && (
                                 <Polyline 
                                   positions={[[trkPoints[trkPoints.length - 1].lat, trkPoints[trkPoints.length - 1].lng], [mapCenter.lat, mapCenter.lng]]} 
@@ -2540,6 +2550,66 @@ const App: React.FC = () => {
                             <>
                               <Polyline positions={scratchPath.map(p => [p.lat, p.lng])} color="#10b981" weight={5} />
                               <Polyline positions={bogeyPath.map(p => [p.lat, p.lng])} color="#facc15" weight={5} />
+                              {isPlanningSession && (
+                                <>
+                                  {scratchPath.map((p, idx) => {
+                                    if (idx === 0) return null;
+                                    const prev = scratchPath[idx - 1];
+                                    if (p.alt === null || prev.alt === null) return null;
+                                    const diff = (p.alt - prev.alt) * elevMult;
+                                    const midLat = (p.lat + prev.lat) / 2;
+                                    const midLng = (p.lng + prev.lng) / 2;
+                                    return (
+                                      <Marker 
+                                        key={`elev-diff-s-${idx}`} 
+                                        position={[midLat, midLng]} 
+                                        icon={L.divIcon({
+                                          className: 'bg-slate-900/80 backdrop-blur-sm border border-emerald-500/30 rounded px-1 text-[9px] font-bold text-emerald-400 whitespace-nowrap flex items-center justify-center',
+                                          html: `${diff > 0 ? '+' : ''}${diff.toFixed(1)}${units === 'Yards' ? 'ft' : 'm'}`,
+                                          iconSize: [40, 16],
+                                          iconAnchor: [20, 8]
+                                        })}
+                                      />
+                                    );
+                                  })}
+                                  {bogeyPath.map((p, idx) => {
+                                    if (idx === 0) return null;
+                                    const prev = bogeyPath[idx - 1];
+                                    if (p.alt === null || prev.alt === null) return null;
+                                    const diff = (p.alt - prev.alt) * elevMult;
+                                    const midLat = (p.lat + prev.lat) / 2;
+                                    const midLng = (p.lng + prev.lng) / 2;
+                                    return (
+                                      <Marker 
+                                        key={`elev-diff-b-${idx}`} 
+                                        position={[midLat, midLng]} 
+                                        icon={L.divIcon({
+                                          className: 'bg-slate-900/80 backdrop-blur-sm border border-yellow-500/30 rounded px-1 text-[9px] font-bold text-yellow-400 whitespace-nowrap flex items-center justify-center',
+                                          html: `${diff > 0 ? '+' : ''}${diff.toFixed(1)}${units === 'Yards' ? 'ft' : 'm'}`,
+                                          iconSize: [40, 16],
+                                          iconAnchor: [20, 8]
+                                        })}
+                                      />
+                                    );
+                                  })}
+                                  {trkActive && trkPoints.length > 0 && mapCenter && (
+                                    <>
+                                      {(() => {
+                                        const sAnchors = [...currentPivots].filter(p => p.type === 'common' || p.type === 'scratch_cut').sort((a, b) => b.point.timestamp - a.point.timestamp);
+                                        const bAnchors = [...currentPivots].filter(p => p.type === 'common' || p.type === 'bogoy_round').sort((a, b) => b.point.timestamp - a.point.timestamp);
+                                        const sLast = sAnchors.length > 0 ? sAnchors[0].point : trkPoints[0];
+                                        const bLast = bAnchors.length > 0 ? bAnchors[0].point : trkPoints[0];
+                                        return (
+                                          <>
+                                            <Polyline positions={[[sLast.lat, sLast.lng], [mapCenter.lat, mapCenter.lng]]} color="#10b981" weight={3} dashArray="10, 10" opacity={0.6} />
+                                            <Polyline positions={[[bLast.lat, bLast.lng], [mapCenter.lat, mapCenter.lng]]} color="#facc15" weight={3} dashArray="10, 10" opacity={0.6} />
+                                          </>
+                                        );
+                                      })()}
+                                    </>
+                                  )}
+                                </>
+                              )}
                             </>
                           );
                         }
@@ -2707,7 +2777,7 @@ const App: React.FC = () => {
                         <div className={`text-4xl font-bold tabular-nums leading-none tracking-tighter ${(!viewingRecord && !['Barometric', 'LiDAR DTM'].includes(getVerticalMethod(pos?.altAccuracy ?? null, pos?.alt ?? null))) ? 'text-rose-500 animate-pulse' : 'text-yellow-400'}`}>{`${effectiveMetrics.elevRater > 0 ? '+' : ''}${effectiveMetrics.elevRater.toFixed(1)}`}<span className="text-[10px] ml-0.5 opacity-40 uppercase">{units === 'Yards' ? 'FT' : 'M'}</span></div>
                       </div>
                     </div>
-                    {pos && !viewingRecord && (
+                    {pos && !viewingRecord && !isPlanningSession && (
                       <div className="flex justify-between pt-2 border-t border-white/10 px-2">
                         <div className="flex items-center gap-1.5">
                           <div className={`w-1.5 h-1.5 rounded-full ${pos.accuracy < 2 ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} title="GNSS Signal"></div>
@@ -2868,7 +2938,7 @@ const App: React.FC = () => {
                           }} className={`flex-1 h-14 rounded-full font-bold text-xs tracking-[0.2em] uppercase border-2 shadow-xl active:scale-95 ${trkActive ? 'bg-red-600 border-red-500' : 'bg-blue-600 border-blue-500'}`}>{trkActive ? 'END HOLE' : 'START HOLE'}</button>
                           {trkActive && (
                             isPlanningSession ? (
-                              <button onClick={handleRecordPoint} className="flex-1 h-14 rounded-full font-bold text-xs tracking-[0.1em] uppercase border-2 bg-slate-800 border-emerald-500 text-emerald-100 shadow-xl active:scale-95">INTERMEDIATE</button>
+                              <button onClick={() => setShowPivotMenu(true)} className="flex-1 h-14 rounded-full font-bold text-xs tracking-[0.1em] uppercase border-2 bg-slate-800 border-emerald-500 text-emerald-100 shadow-xl active:scale-95">PIVOT ({currentPivots.length})</button>
                             ) : (
                               <button onClick={() => setShowPivotMenu(true)} className="flex-1 h-14 rounded-full font-bold text-xs tracking-[0.1em] uppercase border-2 bg-slate-800 border-blue-500 text-blue-100 shadow-xl active:scale-95">PIVOT ({currentPivots.length})</button>
                             )
