@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { MapContainer, TileLayer, WMSTileLayer, CircleMarker, Polyline, Circle, useMap, Polygon, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, WMSTileLayer, CircleMarker, Polyline, Circle, useMap, Polygon, useMapEvents, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import { 
   ChevronLeft,
@@ -49,6 +49,65 @@ import html2canvas from 'html2canvas';
 import { WCSAnalyzer } from './components/WCSAnalyzer';
 
 import { CoursePlanning } from './components/CoursePlanning';
+
+/** --- LIDAR GRID --- **/
+const LidarGrid = () => {
+  const map = useMap();
+  
+  useEffect(() => {
+    if (!map) return;
+
+    // @ts-ignore
+    const GridLayer = L.GridLayer.extend({
+      createTile: function (coords: any) {
+        const tile = L.DomUtil.create('canvas', 'leaflet-tile');
+        const size = this.getTileSize();
+        tile.width = size.x;
+        tile.height = size.y;
+        const ctx = tile.getContext('2d');
+        if (!ctx) return tile;
+
+        const zoom = coords.z;
+        if (zoom < 17) return tile;
+
+        const nwPoint = coords.scaleBy(size);
+        const sePoint = coords.add(L.point(1, 1)).scaleBy(size);
+        const nw = map.unproject(nwPoint, zoom);
+        const se = map.unproject(sePoint, zoom);
+
+        const latSpacing = 5 / 111319.9;
+        const lngSpacing = 5 / (111319.9 * Math.cos(nw.lat * Math.PI / 180));
+
+        const startLat = Math.floor(se.lat / latSpacing) * latSpacing;
+        const endLat = Math.ceil(nw.lat / latSpacing) * latSpacing;
+        const startLng = Math.floor(nw.lng / lngSpacing) * lngSpacing;
+        const endLng = Math.ceil(se.lng / lngSpacing) * lngSpacing;
+
+        ctx.fillStyle = '#facc15';
+
+        for (let lat = startLat; lat <= endLat; lat += latSpacing) {
+          for (let lng = startLng; lng <= endLng; lng += lngSpacing) {
+            const point = map.project([lat, lng], zoom).subtract(nwPoint);
+            if (point.x >= 0 && point.x < size.x && point.y >= 0 && point.y < size.y) {
+              ctx.fillRect(Math.round(point.x), Math.round(point.y), 1, 1);
+            }
+          }
+        }
+
+        return tile;
+      }
+    });
+
+    const layer = new (GridLayer as any)({ opacity: 1.0, zIndex: 1000 });
+    layer.addTo(map);
+
+    return () => {
+      map.removeLayer(layer);
+    };
+  }, [map]);
+
+  return null;
+};
 
 /** --- TYPES --- **/
 // Fix: Renamed View to AppView to resolve "Cannot find name 'AppView'" errors on lines 839 and 1069
@@ -1642,12 +1701,16 @@ const App: React.FC = () => {
   }, [mapCenter, isFollowing]);
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
+    const fetchId = Date.now();
+    lidarFetchRef.current = fetchId;
     setLidarStatus('loading');
     setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: '/api/lidar' }));
     
     try {
       const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`);
       
+      if (lidarFetchRef.current !== fetchId) return null;
+
       const contentType = response.headers.get('content-type');
       if (contentType && contentType.includes('application/json')) {
         const data = await response.json();
@@ -1665,7 +1728,7 @@ const App: React.FC = () => {
           }
         }
         
-        // Fallback for old ArcGIS format (if needed, though api/lidar.ts was updated)
+        // Fallback for old ArcGIS format
         if (data && data.results && data.results.length > 0) {
           const res = data.results[0];
           const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
@@ -1685,8 +1748,10 @@ const App: React.FC = () => {
       setLidarStatus('error');
       return null;
     } catch (error: any) {
-      setLidarStatus('error');
-      setLidarDebug(prev => ({ ...prev, response: `PROXY ERROR: ${error.message}` }));
+      if (lidarFetchRef.current === fetchId) {
+        setLidarStatus('error');
+        setLidarDebug(prev => ({ ...prev, response: `PROXY ERROR: ${error.message}` }));
+      }
       return null;
     }
   };
@@ -1855,7 +1920,8 @@ const App: React.FC = () => {
         // Record path in both modes if tracking is active
         // For manual mode, we record as the user pans
         // For following mode, we record as the user walks
-        if (dist > 2) {
+        // In planning mode, we only record manually via the Record button
+        if (dist > 2 && !isPlanningSession) {
           return [...prev, pos];
         }
         
@@ -2012,6 +2078,22 @@ const App: React.FC = () => {
 
     if (currentRaterPath.length < 2) return { distRater: 0, elevRater: 0, distScratch: 0, elevScratch: 0, distBogey: 0, elevBogey: 0, effectivePaths: { scratch: [], bogey: [] }, sectorScratch: null, sectorBogey: null };
     
+    // For Course Planning, we use the recorded path directly
+    if (isPlanningSession) {
+      const raterPathMetrics = calculatePathDistanceAndElevation(currentRaterPath, distMult, elevMult);
+      return { 
+        distRater: raterPathMetrics.distance, 
+        elevRater: raterPathMetrics.elevation, 
+        distScratch: raterPathMetrics.distance, 
+        elevScratch: raterPathMetrics.elevation, 
+        distBogey: raterPathMetrics.distance, 
+        elevBogey: raterPathMetrics.elevation, 
+        effectivePaths: { scratch: currentRaterPath, bogey: currentRaterPath }, 
+        sectorScratch: null, 
+        sectorBogey: null 
+      };
+    }
+    
     const calculated = calculateEffectivePathsAndMetrics(currentRaterPath, currentPivots, distMult, elevMult);
     const raterPathMetrics = calculatePathDistanceAndElevation(currentRaterPath, distMult, elevMult);
     return { distRater: raterPathMetrics.distance, elevRater: raterPathMetrics.elevation, distScratch: calculated.effectiveDistances.scratch, elevScratch: calculated.effectiveElevations.scratch, distBogey: calculated.effectiveDistances.bogey, elevBogey: calculated.effectiveElevations.bogey, effectivePaths: calculated.effectivePaths, sectorScratch, sectorBogey };
@@ -2036,6 +2118,14 @@ const App: React.FC = () => {
   const handleConfirmPivot = useCallback(() => {
     if (pos && pendingPivotType) { setCurrentPivots(prev => [...prev, { point: pos, type: pendingPivotType }]); setTrkPoints(prev => [...prev, pos]); setPendingPivotType(null); setShowPivotMenu(false); }
   }, [pos, pendingPivotType]);
+
+  const handleRecordPoint = useCallback(async () => {
+    if (!pos) return;
+    // Fetch latest LiDAR elevation for the recorded point
+    const alt = await fetchLidarElevation(pos.lat, pos.lng);
+    const pointWithAlt: GeoPoint = { ...pos, alt, altAccuracy: alt !== null ? 0.2 : null, source: 'Manual/LiDAR' };
+    setTrkPoints(prev => [...prev, pointWithAlt]);
+  }, [pos]);
 
   const exportKML = () => {
     let kml = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Scottish Golf Export</name>`;
@@ -2310,7 +2400,7 @@ const App: React.FC = () => {
                     format="image/png"
                     transparent={true}
                     version="1.3.0"
-                    opacity={0.6}
+                    opacity={0.15}
                     maxZoom={22}
                     maxNativeZoom={18}
                     minZoom={10}
@@ -2330,6 +2420,7 @@ const App: React.FC = () => {
                     }}
                   />
                 )}
+                {mapStyle === 'LiDAR DTM' && <LidarGrid />}
                 <MapController 
                   key={mapLockKey} 
                   pos={pos} 
@@ -2403,8 +2494,43 @@ const App: React.FC = () => {
                         const bogeyPath = effectiveMetrics.effectivePaths?.bogey || [];
                         const raterWalk = trkActive ? [...trkPoints, ...(pos?[pos]:[])] : (viewingRecord ? (viewingRecord.raterPathPoints || []) : trkPoints);
                         
-                        if (viewingTrackProfile === 'Rater\'s Walk') {
-                          return <Polyline positions={raterWalk.map(p => [p.lat, p.lng])} color="#ef4444" weight={5} />;
+                        if (viewingTrackProfile === 'Rater\'s Walk' || isPlanningSession) {
+                          return (
+                            <>
+                              <Polyline positions={raterWalk.map(p => [p.lat, p.lng])} color="#ef4444" weight={5} />
+                              {/* Elevation difference labels for Course Planning */}
+                              {isPlanningSession && raterWalk.map((p, idx) => {
+                                if (idx === 0) return null;
+                                const prev = raterWalk[idx - 1];
+                                if (p.alt === null || prev.alt === null) return null;
+                                const diff = (p.alt - prev.alt) * elevMult;
+                                const midLat = (p.lat + prev.lat) / 2;
+                                const midLng = (p.lng + prev.lng) / 2;
+                                return (
+                                  <Marker 
+                                    key={`elev-diff-${idx}`} 
+                                    position={[midLat, midLng]} 
+                                    icon={L.divIcon({
+                                      className: 'bg-slate-900/80 backdrop-blur-sm border border-white/20 rounded px-1 text-[9px] font-bold text-white whitespace-nowrap flex items-center justify-center',
+                                      html: `${diff > 0 ? '+' : ''}${diff.toFixed(1)}${units === 'Yards' ? 'ft' : 'm'}`,
+                                      iconSize: [40, 16],
+                                      iconAnchor: [20, 8]
+                                    })}
+                                  />
+                                );
+                              })}
+                              {/* Preview line from last point to crosshair */}
+                              {trkActive && isPlanningSession && trkPoints.length > 0 && mapCenter && (
+                                <Polyline 
+                                  positions={[[trkPoints[trkPoints.length - 1].lat, trkPoints[trkPoints.length - 1].lng], [mapCenter.lat, mapCenter.lng]]} 
+                                  color="#ef4444" 
+                                  weight={3} 
+                                  dashArray="10, 10" 
+                                  opacity={0.6}
+                                />
+                              )}
+                            </>
+                          );
                         }
                         
                         if (!pathsDiffer) {
@@ -2707,8 +2833,46 @@ const App: React.FC = () => {
                               <button onClick={() => setHoleNum(h => Math.min(18, h + 1))} className="w-9 h-9 bg-slate-800 rounded-full flex items-center justify-center border border-white/10 active:bg-blue-600 transition-colors"><Plus size={14} /></button>
                             </div>
                           )}
-                          <button onClick={() => { if(!trkActive) { setTrkActive(true); setTrkPoints(pos ? [pos] : []); setCurrentPivots([]); } else { const finalPath = [...trkPoints, pos].filter(Boolean) as GeoPoint[]; setTrkPoints(finalPath); const calculated = calculateEffectivePathsAndMetrics(finalPath, currentPivots, distMult, elevMult); saveRecord({ type: 'Track', primaryValue: `S: ${calculated.effectiveDistances.scratch.toFixed(1)} / B: ${calculated.effectiveDistances.bogey.toFixed(1)}`, points: finalPath, raterPathPoints: finalPath, pivotPoints: currentPivots, genderRated: ratingGender, effectiveDistances: calculated.effectiveDistances, effectiveElevations: calculated.effectiveElevations, effectivePaths: calculated.effectivePaths, holeNumber: holeNum }); setTrkActive(false); } }} className={`flex-1 h-14 rounded-full font-bold text-xs tracking-[0.2em] uppercase border-2 shadow-xl active:scale-95 ${trkActive ? 'bg-red-600 border-red-500' : 'bg-blue-600 border-blue-500'}`}>{trkActive ? 'STOP TRACK' : 'START TRACK'}</button>
-                          {trkActive && <button onClick={() => setShowPivotMenu(true)} className="flex-1 h-14 rounded-full font-bold text-xs tracking-[0.1em] uppercase border-2 bg-slate-800 border-blue-500 text-blue-100 shadow-xl active:scale-95">PIVOT ({currentPivots.length})</button>}
+                          <button onClick={() => { 
+                            if(!trkActive) { 
+                              setTrkActive(true); 
+                              if (isPlanningSession) {
+                                setTrkPoints([]); // Don't add first point automatically in planning
+                              } else {
+                                setTrkPoints(pos ? [pos] : []); 
+                              }
+                              setCurrentPivots([]); 
+                            } else { 
+                              let finalPath = [...trkPoints];
+                              if (isPlanningSession && pos) {
+                                finalPath = [...finalPath, pos]; // Final point at crosshair
+                              } else if (!isPlanningSession) {
+                                finalPath = [...finalPath, pos].filter(Boolean) as GeoPoint[];
+                              }
+                              setTrkPoints(finalPath); 
+                              const calculated = calculateEffectivePathsAndMetrics(finalPath, currentPivots, distMult, elevMult); 
+                              saveRecord({ 
+                                type: 'Track', 
+                                primaryValue: `S: ${calculated.effectiveDistances.scratch.toFixed(1)} / B: ${calculated.effectiveDistances.bogey.toFixed(1)}`, 
+                                points: finalPath, 
+                                raterPathPoints: finalPath, 
+                                pivotPoints: currentPivots, 
+                                genderRated: ratingGender, 
+                                effectiveDistances: calculated.effectiveDistances, 
+                                effectiveElevations: calculated.effectiveElevations, 
+                                effectivePaths: calculated.effectivePaths, 
+                                holeNumber: holeNum 
+                              }); 
+                              setTrkActive(false); 
+                            } 
+                          }} className={`flex-1 h-14 rounded-full font-bold text-xs tracking-[0.2em] uppercase border-2 shadow-xl active:scale-95 ${trkActive ? 'bg-red-600 border-red-500' : 'bg-blue-600 border-blue-500'}`}>{trkActive ? 'END HOLE' : 'START HOLE'}</button>
+                          {trkActive && (
+                            isPlanningSession ? (
+                              <button onClick={handleRecordPoint} className="flex-1 h-14 rounded-full font-bold text-xs tracking-[0.1em] uppercase border-2 bg-slate-800 border-emerald-500 text-emerald-100 shadow-xl active:scale-95">INTERMEDIATE</button>
+                            ) : (
+                              <button onClick={() => setShowPivotMenu(true)} className="flex-1 h-14 rounded-full font-bold text-xs tracking-[0.1em] uppercase border-2 bg-slate-800 border-blue-500 text-blue-100 shadow-xl active:scale-95">PIVOT ({currentPivots.length})</button>
+                            )
+                          )}
                         </div>
                     ) : (
                       <div className="flex gap-2 w-full">

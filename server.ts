@@ -34,26 +34,26 @@ async function startServer() {
       // Use WMS GetFeatureInfo on the same layers used for the map overlay
       const params = new URLSearchParams();
       params.append('service', 'WMS');
-      params.append('version', '1.3.0');
+      params.append('version', '1.1.1');
       params.append('request', 'GetFeatureInfo');
       // Query all phases to ensure coverage
       const layers = 'scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
       params.append('layers', layers);
       params.append('query_layers', layers);
-      params.append('i', '50');
-      params.append('j', '50');
+      params.append('x', '50');
+      params.append('y', '50');
       params.append('width', '101');
       params.append('height', '101');
-      params.append('crs', 'EPSG:4326');
+      params.append('srs', 'EPSG:4326');
       
       // Slightly larger delta for better reliability at high zoom
       const delta = 0.0005; 
       const lngNum = Number(lng);
       const latNum = Number(lat);
-      // EPSG:4326 in WMS 1.3.0 is lat,lon
-      params.append('bbox', `${latNum - delta},${lngNum - delta},${latNum + delta},${lngNum + delta}`);
+      // EPSG:4326 in WMS 1.1.1 is lon,lat
+      params.append('bbox', `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`);
       params.append('info_format', 'application/json');
-      params.append('feature_count', '1');
+      params.append('feature_count', '50'); // Check more features to find data across layers
 
       console.log(`[LiDAR API] Fetching from WMS GetFeatureInfo: ${wmsUrl}?${params.toString()}`);
 
@@ -71,11 +71,19 @@ async function startServer() {
         // Find the first feature that has a valid elevation property
         for (const feature of response.data.features) {
           const props = feature.properties;
-          const val = props.GRAY_INDEX ?? props.value ?? props.Value ?? props.elevation ?? props.ELEVATION;
-          if (val !== null && val !== undefined && !isNaN(parseFloat(val))) {
-            elevation = val;
-            break;
+          if (!props) continue;
+          
+          // Check all properties for a numeric value that looks like elevation
+          for (const key in props) {
+            const val = parseFloat(props[key]);
+            // Elevation in Scotland is rarely > 1400m or < -10m (bathymetry aside)
+            // -9999 is a common "no data" value
+            if (val !== null && val !== undefined && !isNaN(val) && val > -50 && val < 5000) {
+              elevation = val;
+              break;
+            }
           }
+          if (elevation !== null) break;
         }
       }
 
