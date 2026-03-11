@@ -358,9 +358,11 @@ const calculatePathDistanceAndElevation = (path: GeoPoint[], distMult: number, e
       const p2 = path[k+1];
       distance += calculateDistance(p1, p2);
     }
-    const startAlt = path[0]?.alt || 0;
-    const endAlt = path[path.length - 1]?.alt || 0;
-    netElevation = (endAlt - startAlt);
+    const startAlt = path[0]?.alt;
+    const endAlt = path[path.length - 1]?.alt;
+    if (startAlt !== null && endAlt !== null && startAlt !== undefined && endAlt !== undefined) {
+      netElevation = (endAlt - startAlt);
+    }
   }
   return {
     distance: distance * distMult,
@@ -1597,6 +1599,7 @@ const App: React.FC = () => {
   const [currentZoom, setCurrentZoom] = useState(2);
   const tilesLoadedCount = React.useRef(0);
   const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available'>('idle');
+  const [isPlanningSession, setIsPlanningSession] = useState(false);
 
   React.useEffect(() => {
     if (mapStyle === 'LiDAR DTM') {
@@ -1655,7 +1658,7 @@ const App: React.FC = () => {
         
         // Handle new JNCC WCS format
         if (data && data.elevation !== undefined) {
-          const val = parseFloat(data.elevation);
+          const val = parseFloat(String(data.elevation).trim());
           if (!isNaN(val)) {
             setLidarStatus('available');
             return val;
@@ -1714,9 +1717,9 @@ const App: React.FC = () => {
         const dLng = Math.abs(newPos.lng - prev.lng);
         const isHugeJump = dLat > 0.5 || dLng > 0.5; // Roughly > 50km jump
 
-        // If it's a huge jump, we should probably trust the new one if it's reasonably accurate
-        // or if the previous one was very inaccurate.
-        if (isHugeJump && newPos.accuracy < 5000) return newPos;
+        // If it's a huge jump, only trust it if accuracy is very high (< 200m)
+        // This prevents random relocations to places like Wales on PC browsers
+        if (isHugeJump && newPos.accuracy < 200) return newPos;
 
         if (newPos.accuracy < prev.accuracy * 0.8) return newPos;
         if (Date.now() - prev.timestamp > 20000) return newPos;
@@ -1784,7 +1787,7 @@ const App: React.FC = () => {
     const watch = navigator.geolocation.watchPosition(
       async (p) => {
         setGpsError(null);
-        if (isFollowing) {
+        if (isFollowing && !isPlanningSession) {
           handleUpdate(p);
           // Always try to fetch LiDAR elevation when following to improve GNSS altitude
           const currentTs = Date.now();
@@ -1810,27 +1813,37 @@ const App: React.FC = () => {
     );
 
     return () => navigator.geolocation.clearWatch(watch);
-  }, [locationResetKey]);
+  }, [locationResetKey, isFollowing, isPlanningSession]);
 
   // Fix: Ensure track points are updated and start altitude is captured correctly
   useEffect(() => {
     if (trkActive && pos) {
       setTrkPoints(prev => {
+        // Update any points in the track that lack altitude if the current pos has it and is nearby
+        // This is crucial for LiDAR where the fetch might finish after points are recorded
+        let changed = false;
+        const updated = prev.map(p => {
+          if (p.alt === null && pos.alt !== null) {
+            const d = L.latLng(p.lat, p.lng).distanceTo(L.latLng(pos.lat, pos.lng));
+            if (d < 10) {
+              changed = true;
+              return { ...p, alt: pos.alt, altAccuracy: pos.altAccuracy, source: pos.source };
+            }
+          }
+          return p;
+        });
+
         if (prev.length === 0) return [pos];
+        
+        if (changed) return updated;
+
         const last = prev[prev.length - 1];
         const dist = L.latLng(last.lat, last.lng).distanceTo(L.latLng(pos.lat, pos.lng));
         
-        // If the last point has no altitude but the current pos does, update the last point
-        // This is crucial for LiDAR where the fetch might finish after tracking starts
-        if (last.alt === null && pos.alt !== null && dist < 1) {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...last, alt: pos.alt, altAccuracy: pos.altAccuracy, source: pos.source };
-          return updated;
-        }
-
-        // In manual mode (not following), we want to record the path as the user pans
-        // On PC, we wait for clicks instead of auto-recording
-        if (!isFollowing && isTouchDevice && dist > 2) {
+        // Record path in both modes if tracking is active
+        // For manual mode, we record as the user pans
+        // For following mode, we record as the user walks
+        if (dist > 2) {
           return [...prev, pos];
         }
         
@@ -2138,7 +2151,7 @@ const App: React.FC = () => {
             )}
           </header>
           <div className="flex flex-col gap-6">
-            <button onClick={() => { setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+            <button onClick={() => { setIsPlanningSession(false); setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><Navigation2 size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
               <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Real-time distance measurement and elevation change</p>
@@ -2150,14 +2163,14 @@ const App: React.FC = () => {
                     <button onClick={() => setRatingGender('Women')} className={`px-4 py-2 rounded-full text-sm font-semibold transition-all ${ratingGender === 'Women' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>Women</button>
                 </div>
             </div>
-            <button onClick={() => { setViewingRecord(null); setMapPoints([]); setMapCompleted(false); setView('green'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+            <button onClick={() => { setIsPlanningSession(false); setViewingRecord(null); setMapPoints([]); setMapCompleted(false); setView('green'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-emerald-600/40"><Target size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-emerald-500">Green Mapper</h2>
               <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Green mapping and Effective Green Diameter</p>
             </button>
 
 
-            <button onClick={() => { setViewingRecord(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+            <button onClick={() => { setIsPlanningSession(true); setViewingRecord(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-yellow-500/80 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-yellow-600/40"><LampDesk size={28} className="text-white-600" /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-yellow-500">Course Planning</h2>
               <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Pre-visit course search for LiDAR data</p>
@@ -2219,6 +2232,7 @@ const App: React.FC = () => {
         <CoursePlanning 
           onClose={() => setView('landing')} 
           onSelect={(lat, lng) => {
+            setIsPlanningSession(true);
             setIsFollowing(false);
             setMapStyle('LiDAR DTM');
             setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
@@ -2253,7 +2267,13 @@ const App: React.FC = () => {
                   {viewingTrackProfile === 'Rater\'s Walk' ? <Route size={20} className="text-rose-500" /> : <Waypoints size={20} className="text-emerald-400" />}
                 </button>
               )}
-              <button onClick={() => { setIsFollowing(true); setMapLockKey(k => k + 1); setLocationResetKey(k => k + 1); }} className={`bg-slate-800 border border-white/20 p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${isFollowing ? 'text-emerald-400' : 'text-slate-500'}`} title="Recenter Map"> <Crosshair size={20} className={isFollowing ? 'animate-pulse' : ''} /></button>
+              <button 
+                onClick={() => { if (!isPlanningSession) { setIsFollowing(true); setMapLockKey(k => k + 1); setLocationResetKey(k => k + 1); } }} 
+                className={`bg-slate-800 border border-white/20 p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${isFollowing ? 'text-emerald-400' : 'text-slate-500'} ${isPlanningSession ? 'opacity-30 cursor-not-allowed' : ''}`} 
+                title={isPlanningSession ? "GNSS Disabled in Planning Mode" : "Recenter Map"}
+              > 
+                <Crosshair size={20} className={isFollowing && !isPlanningSession ? 'animate-pulse' : ''} />
+              </button>
               <button onClick={() => setUnits(u => u === 'Yards' ? 'Metres' : 'Yards')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-emerald-400 shadow-2xl active:scale-90"><Ruler size={20} /></button>
               <button onClick={() => setMapStyle(s => s === 'Street' ? 'Satellite' : s === 'Satellite' ? 'LiDAR DTM' : 'Street')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-blue-400 shadow-2xl active:scale-90"><Layers size={20} /></button>
             </div>
