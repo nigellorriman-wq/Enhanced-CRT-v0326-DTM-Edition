@@ -1700,6 +1700,9 @@ const App: React.FC = () => {
     
     const handleUpdate = (p: GeolocationPosition) => {
       setPos(prev => {
+        // CRITICAL: If we are not following, do not let GNSS background updates overwrite manual/planning position
+        if (!isFollowing && prev) return prev;
+
         const newPos: GeoPoint = { 
           lat: p.coords.latitude, 
           lng: p.coords.longitude, 
@@ -1719,7 +1722,10 @@ const App: React.FC = () => {
 
         // If it's a huge jump, only trust it if accuracy is very high (< 200m)
         // This prevents random relocations to places like Wales on PC browsers
-        if (isHugeJump && newPos.accuracy < 200) return newPos;
+        if (isHugeJump) {
+          if (newPos.accuracy < 200) return newPos;
+          return prev; // Reject huge jumps with low accuracy
+        }
 
         if (newPos.accuracy < prev.accuracy * 0.8) return newPos;
         if (Date.now() - prev.timestamp > 20000) return newPos;
@@ -1729,8 +1735,10 @@ const App: React.FC = () => {
       });
     };
 
-    // Clear any existing state for a clean start
-    setPos(null);
+    // Clear any existing state for a clean start - ONLY if not in a planning session
+    if (!isPlanningSession) {
+      setPos(null);
+    }
 
     const options = {
       enableHighAccuracy: true,
@@ -1778,11 +1786,13 @@ const App: React.FC = () => {
     };
     checkPermission();
 
-    // Try multiple strategies
-    navigator.geolocation.getCurrentPosition(handleUpdate, 
-      () => navigator.geolocation.getCurrentPosition(handleUpdate, handleError, coarseOptions), 
-      options
-    );
+    // Only auto-locate on mount or reset if we are NOT in a planning session
+    if (!isPlanningSession) {
+      navigator.geolocation.getCurrentPosition(handleUpdate, 
+        () => navigator.geolocation.getCurrentPosition(handleUpdate, handleError, coarseOptions), 
+        options
+      );
+    }
 
     const watch = navigator.geolocation.watchPosition(
       async (p) => {
@@ -1807,7 +1817,9 @@ const App: React.FC = () => {
       },
       (err) => {
         handleError(err);
-        navigator.geolocation.getCurrentPosition(handleUpdate, null, coarseOptions);
+        if (!isPlanningSession) {
+          navigator.geolocation.getCurrentPosition(handleUpdate, null, coarseOptions);
+        }
       },
       { ...options, timeout: 60000 }
     );
@@ -2151,7 +2163,7 @@ const App: React.FC = () => {
             )}
           </header>
           <div className="flex flex-col gap-6">
-            <button onClick={() => { setIsPlanningSession(false); setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+            <button onClick={() => { setIsPlanningSession(false); setIsFollowing(true); setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><Navigation2 size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
               <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Real-time distance measurement and elevation change</p>
@@ -2163,7 +2175,7 @@ const App: React.FC = () => {
                     <button onClick={() => setRatingGender('Women')} className={`px-4 py-2 rounded-full text-sm font-semibold transition-all ${ratingGender === 'Women' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>Women</button>
                 </div>
             </div>
-            <button onClick={() => { setIsPlanningSession(false); setViewingRecord(null); setMapPoints([]); setMapCompleted(false); setView('green'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+            <button onClick={() => { setIsPlanningSession(false); setIsFollowing(true); setViewingRecord(null); setMapPoints([]); setMapCompleted(false); setView('green'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-emerald-600/40"><Target size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-emerald-500">Green Mapper</h2>
               <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Green mapping and Effective Green Diameter</p>
@@ -2230,7 +2242,7 @@ const App: React.FC = () => {
         <WCSAnalyzer onBack={() => setView('landing')} />
       ) : view === 'planning' ? (
         <CoursePlanning 
-          onClose={() => setView('landing')} 
+          onClose={() => { setIsPlanningSession(false); setView('landing'); }} 
           onSelect={(lat, lng) => {
             setIsPlanningSession(true);
             setIsFollowing(false);
