@@ -40,7 +40,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   const [isExporting, setIsExporting] = useState(false);
   const [isLoadingLidar, setIsLoadingLidar] = useState(false);
   const [profiles, setProfiles] = useState<Record<string, { scratch: ProfilePoint[], bogey: ProfilePoint[] }>>({});
+  const profilesRef = useRef(profiles);
+  const isLoadingLidarRef = useRef(isLoadingLidar);
   const reportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { profilesRef.current = profiles; }, [profiles]);
+  useEffect(() => { isLoadingLidarRef.current = isLoadingLidar; }, [isLoadingLidar]);
 
   const currentTrack = tracks[currentIndex];
 
@@ -138,9 +143,9 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     for (let i = 0; i < tracks.length; i++) {
       setCurrentIndex(i);
       
-      // Wait for profile to be generated for this specific track
+      // Wait for profile to be generated for this specific track AND for loading to finish
       let attempts = 0;
-      while (!profiles[tracks[i].id] && attempts < 100) {
+      while ((!profilesRef.current[tracks[i].id] || isLoadingLidarRef.current) && attempts < 300) {
         await new Promise(resolve => setTimeout(resolve, 200));
         attempts++;
       }
