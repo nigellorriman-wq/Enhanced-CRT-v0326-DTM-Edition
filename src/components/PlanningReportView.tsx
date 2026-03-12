@@ -12,7 +12,8 @@ import {
   Area,
   ComposedChart,
   Line,
-  Label
+  Label,
+  ReferenceLine
 } from 'recharts';
 import { SavedRecord, GeoPoint, UnitSystem, calculateDistance } from '../App';
 
@@ -30,18 +31,18 @@ interface ProfilePoint {
   elevationDiffMetres: number;
   absoluteAltitude: number;
   absoluteAltitudeMetres: number;
+  isPivot?: boolean;
 }
 
 export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, fileName, onClose, units }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [reportUnits, setReportUnits] = useState<UnitSystem>(units);
   const [isExporting, setIsExporting] = useState(false);
   const [isLoadingLidar, setIsLoadingLidar] = useState(false);
   const [profiles, setProfiles] = useState<Record<string, { scratch: ProfilePoint[], bogey: ProfilePoint[] }>>({});
   const reportRef = useRef<HTMLDivElement>(null);
 
   const currentTrack = tracks[currentIndex];
-  const distMult = units === 'Yards' ? 1.09361 : 1;
-  const elevMult = units === 'Yards' ? 3.28084 : 1;
 
   const fetchLidar = async (lat: number, lng: number): Promise<number | null> => {
     try {
@@ -108,7 +109,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             elevationDiff: (currentAlt - startAlt) * 3.28084, // Feet
             elevationDiffMetres: currentAlt - startAlt,
             absoluteAltitude: currentAlt * 3.28084, // Feet
-            absoluteAltitudeMetres: currentAlt
+            absoluteAltitudeMetres: currentAlt,
+            isPivot: step === 0 || (i === anchors.length - 2 && step === numSteps)
           });
         }
         totalDistMetres += segmentDist;
@@ -135,12 +137,15 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
 
     for (let i = 0; i < tracks.length; i++) {
       setCurrentIndex(i);
-      // Wait for LiDAR and re-render
+      
+      // Wait for profile to be generated for this specific track
       let attempts = 0;
-      while (isLoadingLidar && attempts < 50) {
+      while (!profiles[tracks[i].id] && attempts < 100) {
         await new Promise(resolve => setTimeout(resolve, 200));
         attempts++;
       }
+      
+      // Extra wait for Recharts to render
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       if (reportRef.current) {
@@ -164,6 +169,13 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   };
 
   const renderChart = (data: ProfilePoint[], title: string, color: string) => {
+    const isImperial = reportUnits === 'Yards';
+    const xKey = isImperial ? 'distance' : 'distanceMetres';
+    const yLeftKey = isImperial ? 'elevationDiff' : 'elevationDiffMetres';
+    const yRightKey = isImperial ? 'absoluteAltitude' : 'absoluteAltitudeMetres';
+    const xUnit = isImperial ? 'Yards' : 'Metres';
+    const yUnit = isImperial ? 'Feet' : 'Metres';
+
     return (
       <div className="flex flex-col w-full h-[350px] mb-8">
         <div className="flex justify-between items-center mb-2 px-4">
@@ -178,13 +190,13 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             <ComposedChart data={data} margin={{ top: 10, right: 40, left: 40, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
               <XAxis 
-                dataKey="distance" 
+                dataKey={xKey} 
                 type="number" 
                 domain={[0, 'dataMax']}
                 tick={{ fontSize: 9, fill: '#64748b' }}
                 stroke="#cbd5e1"
               >
-                <Label value="Distance (Yards / Metres)" offset={-10} position="insideBottom" fontSize={10} fontWeight="bold" fill="#475569" />
+                <Label value={`Distance (${xUnit})`} offset={-10} position="insideBottom" fontSize={10} fontWeight="bold" fill="#475569" />
               </XAxis>
               
               {/* Left Y-Axis: Elevation Difference */}
@@ -193,7 +205,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 tick={{ fontSize: 9, fill: '#64748b' }}
                 stroke="#cbd5e1"
               >
-                <Label value="Elev Diff (Feet / Metres)" angle={-90} position="insideLeft" offset={10} fontSize={10} fontWeight="bold" fill="#475569" />
+                <Label value={`Elev Diff (${yUnit})`} angle={-90} position="insideLeft" offset={10} fontSize={10} fontWeight="bold" fill="#475569" />
               </YAxis>
 
               {/* Right Y-Axis: Absolute Altitude */}
@@ -203,7 +215,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 tick={{ fontSize: 9, fill: '#64748b' }}
                 stroke="#cbd5e1"
               >
-                <Label value="Altitude (Feet / Metres)" angle={90} position="insideRight" offset={10} fontSize={10} fontWeight="bold" fill="#475569" />
+                <Label value={`Altitude (${yUnit})`} angle={90} position="insideRight" offset={10} fontSize={10} fontWeight="bold" fill="#475569" />
               </YAxis>
 
               <Tooltip 
@@ -221,11 +233,21 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                   return null;
                 }}
               />
+
+              {data.filter(p => p.isPivot).map((p, i) => (
+                <ReferenceLine 
+                  key={i} 
+                  x={p[xKey]} 
+                  stroke="#94a3b8" 
+                  strokeDasharray="3 3" 
+                  yAxisId="left"
+                />
+              ))}
               
               <Area 
                 yAxisId="left"
                 type="monotone" 
-                dataKey="elevationDiff" 
+                dataKey={yLeftKey} 
                 stroke={color} 
                 fill={color} 
                 fillOpacity={0.1} 
@@ -236,7 +258,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
               <Line
                 yAxisId="right"
                 type="monotone"
-                dataKey="absoluteAltitude"
+                dataKey={yRightKey}
                 stroke="#94a3b8"
                 strokeWidth={1}
                 strokeDasharray="5 5"
@@ -261,14 +283,30 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest">Planning Report Tool</span>
           <span className="text-sm font-bold text-white truncate max-w-[200px]">{fileName}</span>
         </div>
-        <button 
-          onClick={exportPDF} 
-          disabled={isExporting || isLoadingLidar}
-          className="bg-amber-600 px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest flex items-center gap-2 active:scale-95 disabled:opacity-50"
-        >
-          {isExporting ? <RotateCcw className="animate-spin" size={14} /> : <Printer size={14} />}
-          {isExporting ? 'Exporting...' : 'Export PDF'}
-        </button>
+        <div className="flex items-center gap-4">
+          <div className="flex bg-slate-800 p-1 rounded-full border border-white/5">
+            <button 
+              onClick={() => setReportUnits('Yards')}
+              className={`px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest transition-all ${reportUnits === 'Yards' ? 'bg-amber-600 text-white shadow-lg' : 'text-slate-400'}`}
+            >
+              Imperial
+            </button>
+            <button 
+              onClick={() => setReportUnits('Metres')}
+              className={`px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest transition-all ${reportUnits === 'Metres' ? 'bg-amber-600 text-white shadow-lg' : 'text-slate-400'}`}
+            >
+              Metric
+            </button>
+          </div>
+          <button 
+            onClick={exportPDF} 
+            disabled={isExporting || isLoadingLidar}
+            className="bg-amber-600 px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest flex items-center gap-2 active:scale-95 disabled:opacity-50"
+          >
+            {isExporting ? <RotateCcw className="animate-spin" size={14} /> : <Printer size={14} />}
+            {isExporting ? 'Exporting...' : 'Export PDF'}
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 flex flex-col items-center bg-slate-950 no-scrollbar">
@@ -305,17 +343,6 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             <div className="flex flex-col items-end text-right">
               <span className="text-lg font-black text-slate-900 uppercase">Hole {currentTrack?.holeNumber || currentIndex + 1}</span>
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{fileName}</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-8 mb-10">
-            <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Scratch Distance</span>
-              <span className="text-3xl font-black text-slate-900">{currentTrack?.effectiveDistances?.scratch.toFixed(1)} <span className="text-sm font-bold text-slate-400 uppercase">{units}</span></span>
-            </div>
-            <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Bogey Distance</span>
-              <span className="text-3xl font-black text-slate-900">{currentTrack?.effectiveDistances?.bogey.toFixed(1)} <span className="text-sm font-bold text-slate-400 uppercase">{units}</span></span>
             </div>
           </div>
 
