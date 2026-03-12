@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ChevronLeft, Printer, RotateCcw, BarChart3, Download, Loader2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Printer, RotateCcw, BarChart3, Download, Loader2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import {
@@ -181,8 +181,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
         <div className="flex justify-between items-center mb-2 px-4">
           <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">{title} Profile</h3>
           <div className="flex gap-4 text-[10px] font-bold text-slate-400">
-            <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }}></div> Elevation Diff</span>
-            <span className="flex items-center gap-1"><div className="w-2 h-2 bg-slate-200 rounded-full"></div> Terrain</span>
+            <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }}></div> Elevation Profile</span>
           </div>
         </div>
         <div className="flex-1 bg-slate-50 rounded-xl p-4 border border-slate-100">
@@ -194,6 +193,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 type="number" 
                 domain={[0, 'dataMax']}
                 tick={{ fontSize: 9, fill: '#64748b' }}
+                tickFormatter={(val) => val.toFixed(1)}
                 stroke="#cbd5e1"
               >
                 <Label value={`Distance (${xUnit})`} offset={-10} position="insideBottom" fontSize={10} fontWeight="bold" fill="#475569" />
@@ -259,10 +259,9 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 yAxisId="right"
                 type="monotone"
                 dataKey={yRightKey}
-                stroke="#94a3b8"
-                strokeWidth={1}
-                strokeDasharray="5 5"
+                stroke="none"
                 dot={false}
+                activeDot={false}
               />
             </ComposedChart>
           </ResponsiveContainer>
@@ -363,6 +362,25 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             <span>Page {currentIndex + 1} of {tracks.length}</span>
           </div>
         </div>
+      </div>
+      <div className="bg-slate-900 border-t border-white/10 p-6 flex justify-between items-center shrink-0">
+        <button 
+          onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))}
+          disabled={currentIndex === 0}
+          className="flex items-center gap-2 text-white font-bold uppercase text-xs tracking-widest disabled:opacity-30"
+        >
+          <ChevronLeft size={20} /> Previous
+        </button>
+        <span className="text-white/60 font-bold text-xs uppercase tracking-widest">
+          Hole {currentTrack?.holeNumber || currentIndex + 1} of {tracks.length}
+        </span>
+        <button 
+          onClick={() => setCurrentIndex(prev => Math.min(tracks.length - 1, prev + 1))}
+          disabled={currentIndex === tracks.length - 1}
+          className="flex items-center gap-2 text-white font-bold uppercase text-xs tracking-widest disabled:opacity-30"
+        >
+          Next <ChevronRight size={20} />
+        </button>
       </div>
     </div>
   );
