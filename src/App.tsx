@@ -41,7 +41,8 @@ import {
   Printer,
   ChevronRight,
   Settings,
-  Search
+  Search,
+  BarChart3
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -49,6 +50,7 @@ import html2canvas from 'html2canvas';
 import { WCSAnalyzer } from './components/WCSAnalyzer';
 
 import { CoursePlanning } from './components/CoursePlanning';
+import { PlanningReportView } from './components/PlanningReportView';
 
 /** --- LIDAR GRID --- **/
 const LidarGrid = () => {
@@ -111,14 +113,14 @@ const LidarGrid = () => {
 
 /** --- TYPES --- **/
 // Fix: Renamed View to AppView to resolve "Cannot find name 'AppView'" errors on lines 839 and 1069
-type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs' | 'planning';
-type UnitSystem = 'Yards' | 'Metres';
-type FontSize = 'small' | 'medium' | 'large';
-type RatingGender = 'Men' | 'Women'; 
-type TrackProfileView = 'Rater\'s Walk' | 'Scratch' | 'Bogey'; 
-type OvalMode = 'off' | 'scratch' | 'bogey';
+export type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs' | 'planning' | 'planning_report';
+export type UnitSystem = 'Yards' | 'Metres';
+export type FontSize = 'small' | 'medium' | 'large';
+export type RatingGender = 'Men' | 'Women'; 
+export type TrackProfileView = 'Rater\'s Walk' | 'Scratch' | 'Bogey'; 
+export type OvalMode = 'off' | 'scratch' | 'bogey';
 
-interface GeoPoint {
+export interface GeoPoint {
   lat: number;
   lng: number;
   alt: number | null;
@@ -129,12 +131,12 @@ interface GeoPoint {
   source?: 'GPS' | 'LiDAR' | 'Manual' | 'Manual/LiDAR';
 }
 
-interface PivotRecord {
+export interface PivotRecord {
   point: GeoPoint;
   type: 'common' | 'scratch_cut' | 'bogoy_round';
 }
 
-interface SavedRecord {
+export interface SavedRecord {
   id: string;
   type: 'Track' | 'Green';
   date: number;
@@ -398,7 +400,7 @@ The App is able to display the 'Accuracy Pattern' in real-time for Scratch and B
 ];
 
 /** --- UTILITIES --- **/
-const calculateDistance = (p1: {lat: number, lng: number}, p2: {lat: number, lng: number}): number => {
+export const calculateDistance = (p1: {lat: number, lng: number}, p2: {lat: number, lng: number}): number => {
   const R = 6371e3;
   const lat1 = p1.lat * Math.PI / 180;
   const lat2 = p2.lat * Math.PI / 180;
@@ -1675,6 +1677,8 @@ const App: React.FC = () => {
   const [lidarLayerLoading, setLidarLayerLoading] = useState(false);
   const [reportGreens, setReportGreens] = useState<SavedRecord[]>([]);
   const [reportFileName, setReportFileName] = useState("");
+  const [planningReportTracks, setPlanningReportTracks] = useState<SavedRecord[]>([]);
+  const [planningReportFileName, setPlanningReportFileName] = useState("");
   const CONCAVITY_FIXED = 0.82;
   const greenStartRef = useRef<GeoPoint | null>(null);
   const lidarFetchRef = useRef<number>(0);
@@ -2148,7 +2152,9 @@ const App: React.FC = () => {
     history.forEach(item => {
       if (item.isPlanning) hasPlanning = true;
       const coords = (item.type === 'Track' && item.raterPathPoints ? item.raterPathPoints : item.points).map(p => `${p.lng},${p.lat},${p.alt || 0}`).join(' ');
-      kml += `<Placemark><name>${item.type} - Hole ${item.holeNumber || '?'}</name><description>Hole:${item.holeNumber || '?'}; Type: ${item.type}</description>${item.type === 'Green' ? `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords} ${item.points[0].lng},${item.points[0].lat},${item.points[0].alt || 0}</coordinates></LinearRing></outerBoundaryIs></Polygon>` : `<LineString><coordinates>${coords}</coordinates></LineString>`}</Placemark>`;
+      const pivotData = item.pivotPoints ? `|Pivots:${JSON.stringify(item.pivotPoints.map(p => ({ lat: p.point.lat, lng: p.point.lng, alt: p.point.alt, type: p.type })))}` : '';
+      const planningTag = item.isPlanning ? '|Planning:true' : '';
+      kml += `<Placemark><name>${item.type} - Hole ${item.holeNumber || '?'}</name><description>Hole:${item.holeNumber || '?'}; Type: ${item.type}${pivotData}${planningTag}</description>${item.type === 'Green' ? `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords} ${item.points[0].lng},${item.points[0].lat},${item.points[0].alt || 0}</coordinates></LinearRing></outerBoundaryIs></Polygon>` : `<LineString><coordinates>${coords}</coordinates></LineString>`}</Placemark>`;
     });
     kml += `</Document></kml>`;
     const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
@@ -2191,6 +2197,68 @@ const App: React.FC = () => {
         newItems.push(record);
       }
       setHistory(prev => [...newItems, ...prev]);
+    };
+    reader.readAsText(file);
+  };
+
+  const importKMLForPlanningReport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const fileName = file.name.replace(/\.[^/.]+$/, "");
+    setPlanningReportFileName(fileName);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(text, "text/xml");
+      const placemarks = xmlDoc.getElementsByTagName("Placemark");
+      const tracks: SavedRecord[] = [];
+      for (let i = 0; i < placemarks.length; i++) {
+        const p = placemarks[i];
+        const nameStr = p.getElementsByTagName("name")[0]?.textContent || "";
+        const coordsStr = p.getElementsByTagName("coordinates")[0]?.textContent || "";
+        const descStr = p.getElementsByTagName("description")[0]?.textContent || "";
+        
+        let holeMatch = descStr.match(/Hole:?\s*(\d+)/i) || nameStr.match(/Hole:?\s*(\d+)/i) || nameStr.match(/(\d+)/);
+        let extractedHole = holeMatch ? parseInt(holeMatch[1]) : 0;
+        
+        const points = coordsStr.trim().split(/\s+/).map(c => { const parts = c.split(',').map(Number); return { lat: parts[1], lng: parts[0], alt: parts[2] || 0, accuracy: 0, altAccuracy: 0, timestamp: Date.now() }; });
+        if (points.length < 2) continue;
+        
+        const isTrack = !!p.getElementsByTagName("LineString")[0] || descStr.includes("Type: Track") || nameStr.toLowerCase().includes("track");
+        const isPlanning = descStr.includes("|Planning:true");
+        
+        if (isTrack || isPlanning) {
+          let pivotPoints: PivotRecord[] = [];
+          const pivotMatch = descStr.match(/\|Pivots:(.*?)(\||$)/);
+          if (pivotMatch) {
+            try {
+              const parsedPivots = JSON.parse(pivotMatch[1]);
+              pivotPoints = parsedPivots.map((pp: any) => ({
+                point: { lat: pp.lat, lng: pp.lng, alt: pp.alt, accuracy: 0, altAccuracy: 0, timestamp: Date.now() },
+                type: pp.type
+              }));
+            } catch (e) { console.error("Failed to parse pivots", e); }
+          }
+
+          const record: SavedRecord = { 
+            id: Math.random().toString(36).substr(2, 9), 
+            date: Date.now(), 
+            type: 'Track', 
+            points, 
+            raterPathPoints: points,
+            pivotPoints,
+            holeNumber: extractedHole || undefined, 
+            primaryValue: nameStr || `Track ${i+1}`, 
+            isPlanning: true 
+          };
+          tracks.push(record);
+        }
+      }
+      if (tracks.length > 0) {
+        tracks.sort((a, b) => (a.holeNumber || 999) - (b.holeNumber || 999));
+        setPlanningReportTracks(tracks);
+        setView('planning_report');
+      }
     };
     reader.readAsText(file);
   };
@@ -2295,7 +2363,7 @@ const App: React.FC = () => {
             <button onClick={() => { setIsPlanningSession(true); setViewingRecord(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-yellow-500/80 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-yellow-600/40"><LampDesk size={28} className="text-white-600" /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-yellow-500">Course Planning</h2>
-              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Pre-visit course search for LiDAR data</p>
+              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Pre-visit course search for LiDAR data and 3D analysis</p>
             </button>
 
             <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer">
@@ -2303,6 +2371,13 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-bold mb-2 uppercase text-rose-700">Green Report Tool</h2>
               <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Batch process KML greens into PDF reports</p>
               <input type="file" accept=".kml" onChange={importKMLForReport} className="hidden" />
+            </label>
+
+            <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer">
+              <div className="w-16 h-16 bg-amber-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-amber-600/40"><BarChart3 size={28} /></div>
+              <h2 className="text-2xl font-bold mb-2 uppercase text-amber-500">Planning Report Tool</h2>
+              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Generate 3D profiles for planned holes</p>
+              <input type="file" accept=".kml" onChange={importKMLForPlanningReport} className="hidden" />
             </label>
             <button onClick={() => { setViewingRecord(null); setView('stimp'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-6 shadow-xl border border-blue-500/20"><Gauge size={28} className="text-lime-500" /></div>
@@ -2348,6 +2423,8 @@ const App: React.FC = () => {
         <StimpCalculator onClose={() => setView('landing')} />
       ) : view === 'report' ? (
         <ReportView greens={reportGreens} fileName={reportFileName} onClose={() => setView('landing')} units={units} />
+      ) : view === 'planning_report' ? (
+        <PlanningReportView tracks={planningReportTracks} fileName={planningReportFileName} onClose={() => setView('landing')} units={units} />
       ) : view === 'wcs' ? (
         <WCSAnalyzer onBack={() => setView('landing')} />
       ) : view === 'planning' ? (
