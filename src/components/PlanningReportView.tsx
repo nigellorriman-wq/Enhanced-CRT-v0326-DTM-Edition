@@ -177,14 +177,14 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     const yUnit = isImperial ? 'Feet' : 'Metres';
 
     return (
-      <div className="flex flex-col w-full h-[350px] mb-8">
+      <div className="flex flex-col w-full mb-12">
         <div className="flex justify-between items-center mb-2 px-4">
           <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">{title} Profile</h3>
           <div className="flex gap-4 text-[10px] font-bold text-slate-400">
             <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }}></div> Elevation Profile</span>
           </div>
         </div>
-        <div className="flex-1 bg-slate-50 rounded-xl p-4 border border-slate-100">
+        <div className="h-[300px] bg-slate-50 rounded-xl p-4 border border-slate-100">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={data} margin={{ top: 10, right: 40, left: 40, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
@@ -199,7 +199,6 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 <Label value={`Distance (${xUnit})`} offset={-10} position="insideBottom" fontSize={10} fontWeight="bold" fill="#475569" />
               </XAxis>
               
-              {/* Left Y-Axis: Elevation Difference */}
               <YAxis 
                 yAxisId="left"
                 tick={{ fontSize: 9, fill: '#64748b' }}
@@ -208,7 +207,6 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 <Label value={`Elev Diff (${yUnit})`} angle={-90} position="insideLeft" offset={10} fontSize={10} fontWeight="bold" fill="#475569" />
               </YAxis>
 
-              {/* Right Y-Axis: Absolute Altitude */}
               <YAxis 
                 yAxisId="right"
                 orientation="right"
@@ -265,6 +263,42 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
               />
             </ComposedChart>
           </ResponsiveContainer>
+        </div>
+
+        {/* Pivot Points Table */}
+        <div className="mt-4 px-4">
+          <table className="w-full text-[10px] border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200">
+                <th className="text-left py-1 font-bold text-slate-400 uppercase tracking-widest">Point</th>
+                <th className="text-right py-1 font-bold text-slate-400 uppercase tracking-widest">Leg Dist ({isImperial ? 'yd' : 'm'})</th>
+                <th className="text-right py-1 font-bold text-slate-400 uppercase tracking-widest">Leg Elev ({isImperial ? 'ft' : 'm'})</th>
+                <th className="text-right py-1 font-bold text-slate-400 uppercase tracking-widest">Total Elev ({isImperial ? 'ft' : 'm'})</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(() => {
+                const pivots = data.filter(p => p.isPivot);
+                return pivots.map((p, i) => {
+                  if (i === 0) return null; // Skip the "Start" point
+                  const prev = pivots[i-1];
+                  const legDist = isImperial ? (p.distance - prev.distance) : (p.distanceMetres - prev.distanceMetres);
+                  const legElev = isImperial ? (p.elevationDiff - prev.elevationDiff) : (p.elevationDiffMetres - prev.elevationDiffMetres);
+                  const totalElev = isImperial ? p.elevationDiff : p.elevationDiffMetres;
+                  const label = i === pivots.length - 1 ? "End" : `Pivot ${i}`;
+
+                  return (
+                    <tr key={i} className="border-b border-slate-100">
+                      <td className="py-1 font-bold text-slate-800">{label}</td>
+                      <td className="py-1 text-right font-medium text-slate-600">{legDist.toFixed(1)}</td>
+                      <td className="py-1 text-right font-medium text-slate-600">{(legElev >= 0 ? '+' : '') + legElev.toFixed(1)}</td>
+                      <td className="py-1 text-right font-bold text-blue-600">{(totalElev >= 0 ? '+' : '') + totalElev.toFixed(1)}</td>
+                    </tr>
+                  );
+                });
+              })()}
+            </tbody>
+          </table>
         </div>
       </div>
     );
