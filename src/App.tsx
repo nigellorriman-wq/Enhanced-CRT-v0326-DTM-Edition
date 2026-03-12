@@ -958,16 +958,23 @@ const MapController: React.FC<{
   const prevPosAccuracy = useRef<number>(Infinity);
   const prevPointsLength = useRef(0);
 
-useMapEvents({
+  const isProgrammatic = useRef(false);
+
+  useMapEvents({
     dragstart: () => { setIsFollowing(false); },
+    zoomstart: () => { 
+      if (!isProgrammatic.current) {
+        setIsFollowing(false); 
+      }
+    },
     move: () => {
-      if (onMapMove) {
+      if (onMapMove && !isFollowing) {
         const center = map.getCenter();
         onMapMove(center.lat, center.lng);
       }
     },
     zoomend: () => {
-      if (onZoomChange) {
+      if (onZoomChange && !isFollowing) {
         onZoomChange(map.getZoom());
       }
     }
@@ -986,10 +993,6 @@ useEffect(() => {
 useEffect(() => {
     const currentPts = mode === 'green' ? mapPoints : trkPoints;
     
-    // Automatically resume following if a new point is added (e.g. pivot inserted)
-    if (currentPts.length > prevPointsLength.current) {
-      setIsFollowing(true);
-    }
     prevPointsLength.current = currentPts.length;
 
     // Gatekeeper: if "Follow" is toggled off (manual movement), stop here
@@ -999,14 +1002,20 @@ useEffect(() => {
       const pts = viewingRecord.type === 'Green' ? viewingRecord.points : viewingRecord.raterPathPoints;
       if (pts && pts.length > 0) {
         const bounds = L.latLngBounds(pts.map(p => [p.lat, p.lng]));
+        isProgrammatic.current = true;
         map.fitBounds(bounds, { padding: [40, 40], paddingBottomRight: [40, 280], animate: true });
+        map.once('moveend', () => { isProgrammatic.current = false; });
       }
     } else if (completed && mode === 'green' && mapPoints.length > 2) {
       const bounds = L.latLngBounds(mapPoints.map(p => [p.lat, p.lng]));
+      isProgrammatic.current = true;
       map.fitBounds(bounds, { padding: [40, 40], paddingBottomRight: [40, 280], animate: true });
+      map.once('moveend', () => { isProgrammatic.current = false; });
     } else if (!active && mode === 'track' && trkPoints.length > 1) {
       const bounds = L.latLngBounds(trkPoints.map(p => [p.lat, p.lng]));
+      isProgrammatic.current = true;
       map.fitBounds(bounds, { padding: [40, 40], paddingBottomRight: [40, 280], animate: true });
+      map.once('moveend', () => { isProgrammatic.current = false; });
     } else if (pos) {
       const accuracyImproved = pos.accuracy < prevPosAccuracy.current * 0.7;
       const currentCenter = map.getCenter();
@@ -1014,7 +1023,9 @@ useEffect(() => {
       
       if (!hasInitialLock.current || accuracyImproved || (active && distMoved > 1)) {
         const targetZoom = (map.getZoom() < 10 || accuracyImproved) ? 19 : map.getZoom();
+        isProgrammatic.current = true;
         map.setView([pos.lat, pos.lng], targetZoom, { animate: true });
+        map.once('moveend', () => { isProgrammatic.current = false; });
         hasInitialLock.current = true;
         prevPosAccuracy.current = pos.accuracy;
       }
@@ -1806,8 +1817,8 @@ const App: React.FC = () => {
       });
     };
 
-    // Clear any existing state for a clean start - ONLY if not in a planning session
-    if (!isPlanningSession) {
+    // Clear any existing state for a clean start - ONLY if not in a planning session and entering follow mode
+    if (!isPlanningSession && isFollowing) {
       setPos(null);
     }
 
