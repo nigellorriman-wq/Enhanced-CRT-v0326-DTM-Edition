@@ -37,7 +37,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       </header>
 
       <p className="text-white-400 text-xs mb-6 px-1 leading-relaxed">
-        Pre-visit analysis tool. Search for a course to begin planning your rating walk or green mapping.
+        Pre-visit analysis tool. Search for a course below.
       </p>
 
       <div className="flex flex-col gap-4 shrink-0 mb-6">
@@ -61,14 +61,23 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
           )}
         </div>
 
-        <button 
-          onClick={handleGo}
-          disabled={!selectedCourse}
-          className="w-full bg-blue-600 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-blue-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-        >
-          <Zap size={18} />
-          <span>GO TO COURSE</span>
-        </button>
+        <div className="flex gap-3">
+          <button 
+            onClick={handleGo}
+            disabled={!selectedCourse}
+            className="flex-1 bg-blue-600 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-blue-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+          >
+            <Zap size={18} />
+            <span>GO TO COURSE</span>
+          </button>
+          <button 
+            onClick={() => onSelect(56.3436, -2.8025, 'Manual Roam')}
+            className="flex-1 bg-slate-800 border border-white/10 text-slate-300 font-bold py-4 rounded-2xl shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+          >
+            <Navigation2 size={18} />
+            <span>SKIP SEARCH</span>
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto no-scrollbar flex flex-col gap-2 pb-8">
@@ -99,7 +108,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         )}
         
         {!search && !selectedCourse && (
-          <p className="text-center text-white-700 text-[10px] uppercase tracking-[0.2em] mt-4">Start typing to search golf courses</p>
+          <p className="text-center text-white-700 text-[10px] uppercase tracking-[0.2em] mt-4">Start typing to search golf courses, or skip to manually roam</p>
         )}
 
         {selectedCourse && (

@@ -159,6 +159,7 @@ interface SavedRecord {
     scratch: number; 
     bogey: number; 
   };
+  isPlanning?: boolean;
 }
 
 /** --- SHOT TARGETS (Yards) --- **/
@@ -871,6 +872,7 @@ const calculateEffectivePathsAndMetrics = (
 
   return {
     effectivePaths: { scratch: finalScratchPath, bogey: finalBogeyPath },
+    effectiveAnchors: { scratch: scratchAnchors, bogey: bogeyAnchors },
     effectiveDistances: { scratch: scratchMetrics.distance, bogey: bogeyMetrics.distance },
     effectiveElevations: { scratch: scratchMetrics.elevation, bogey: bogeyMetrics.elevation },
   };
@@ -2094,6 +2096,7 @@ const App: React.FC = () => {
         distBogey: calculated.effectiveDistances.bogey, 
         elevBogey: calculated.effectiveElevations.bogey, 
         effectivePaths: calculated.effectivePaths, 
+        effectiveAnchors: calculated.effectiveAnchors,
         sectorScratch, 
         sectorBogey 
       };
@@ -2101,7 +2104,7 @@ const App: React.FC = () => {
     
     const calculated = calculateEffectivePathsAndMetrics(currentRaterPath, currentPivots, distMult, elevMult);
     const raterPathMetrics = calculatePathDistanceAndElevation(currentRaterPath, distMult, elevMult);
-    return { distRater: raterPathMetrics.distance, elevRater: raterPathMetrics.elevation, distScratch: calculated.effectiveDistances.scratch, elevScratch: calculated.effectiveElevations.scratch, distBogey: calculated.effectiveDistances.bogey, elevBogey: calculated.effectiveElevations.bogey, effectivePaths: calculated.effectivePaths, sectorScratch, sectorBogey };
+    return { distRater: raterPathMetrics.distance, elevRater: raterPathMetrics.elevation, distScratch: calculated.effectiveDistances.scratch, elevScratch: calculated.effectiveElevations.scratch, distBogey: calculated.effectiveDistances.bogey, elevBogey: calculated.effectiveElevations.bogey, effectivePaths: calculated.effectivePaths, effectiveAnchors: calculated.effectiveAnchors, sectorScratch, sectorBogey };
   }, [trkPoints, currentPivots, trkActive, pos, viewingRecord, distMult, elevMult]);
 
   const pathsDiffer = useMemo(() => {
@@ -2141,7 +2144,9 @@ const App: React.FC = () => {
 
   const exportKML = () => {
     let kml = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Scottish Golf Export</name>`;
+    let hasPlanning = false;
     history.forEach(item => {
+      if (item.isPlanning) hasPlanning = true;
       const coords = (item.type === 'Track' && item.raterPathPoints ? item.raterPathPoints : item.points).map(p => `${p.lng},${p.lat},${p.alt || 0}`).join(' ');
       kml += `<Placemark><name>${item.type} - Hole ${item.holeNumber || '?'}</name><description>Hole:${item.holeNumber || '?'}; Type: ${item.type}</description>${item.type === 'Green' ? `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords} ${item.points[0].lng},${item.points[0].lat},${item.points[0].alt || 0}</coordinates></LinearRing></outerBoundaryIs></Polygon>` : `<LineString><coordinates>${coords}</coordinates></LineString>`}</Placemark>`;
     });
@@ -2152,7 +2157,10 @@ const App: React.FC = () => {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const ts = `${String(now.getFullYear()).slice(-2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-    a.href = url; a.download = `${ts}.kml`; a.click(); URL.revokeObjectURL(url);
+    a.href = url; 
+    a.download = `${hasPlanning ? 'Planning_' : ''}${ts}.kml`; 
+    a.click(); 
+    URL.revokeObjectURL(url);
   };
 
   const importKML = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2552,9 +2560,9 @@ const App: React.FC = () => {
                               <Polyline positions={bogeyPath.map(p => [p.lat, p.lng])} color="#facc15" weight={5} />
                               {isPlanningSession && (
                                 <>
-                                  {scratchPath.map((p, idx) => {
+                                  {(effectiveMetrics.effectiveAnchors?.scratch || []).map((p, idx) => {
                                     if (idx === 0) return null;
-                                    const prev = scratchPath[idx - 1];
+                                    const prev = (effectiveMetrics.effectiveAnchors?.scratch || [])[idx - 1];
                                     if (p.alt === null || prev.alt === null) return null;
                                     const diff = (p.alt - prev.alt) * elevMult;
                                     const midLat = (p.lat + prev.lat) / 2;
@@ -2572,9 +2580,9 @@ const App: React.FC = () => {
                                       />
                                     );
                                   })}
-                                  {bogeyPath.map((p, idx) => {
+                                  {(effectiveMetrics.effectiveAnchors?.bogey || []).map((p, idx) => {
                                     if (idx === 0) return null;
-                                    const prev = bogeyPath[idx - 1];
+                                    const prev = (effectiveMetrics.effectiveAnchors?.bogey || [])[idx - 1];
                                     if (p.alt === null || prev.alt === null) return null;
                                     const diff = (p.alt - prev.alt) * elevMult;
                                     const midLat = (p.lat + prev.lat) / 2;
@@ -2931,7 +2939,8 @@ const App: React.FC = () => {
                                 effectiveDistances: calculated.effectiveDistances, 
                                 effectiveElevations: calculated.effectiveElevations, 
                                 effectivePaths: calculated.effectivePaths, 
-                                holeNumber: holeNum 
+                                holeNumber: holeNum,
+                                isPlanning: isPlanningSession
                               }); 
                               setTrkActive(false); 
                             } 
