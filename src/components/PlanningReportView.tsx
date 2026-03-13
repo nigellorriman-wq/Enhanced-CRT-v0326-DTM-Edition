@@ -186,8 +186,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     return (
       <div className="flex flex-col w-full mb-6">
         <div className="flex justify-between items-center mb-2 px-4">
-          <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">{title} Profile</h3>
-          <div className="flex gap-4 text-[10px] font-bold text-slate-400">
+          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-widest">{title} Profile</h3>
+          <div className="flex gap-4 text-[10px] font-bold text-slate-900">
             <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }}></div> Elevation Profile</span>
           </div>
         </div>
@@ -199,28 +199,28 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 dataKey={xKey} 
                 type="number" 
                 domain={[0, 'dataMax']}
-                tick={{ fontSize: 9, fill: '#64748b' }}
+                tick={{ fontSize: 9, fill: '#0f172a' }}
                 tickFormatter={(val) => val.toFixed(1)}
-                stroke="#cbd5e1"
+                stroke="#0f172a"
               >
-                <Label value={`Distance (${xUnit})`} offset={-10} position="insideBottom" fontSize={10} fontWeight="bold" fill="#475569" />
+                <Label value={`Distance (${xUnit})`} offset={-10} position="insideBottom" fontSize={10} fontWeight="bold" fill="#0f172a" />
               </XAxis>
               
               <YAxis 
                 yAxisId="left"
-                tick={{ fontSize: 9, fill: '#64748b' }}
-                stroke="#cbd5e1"
+                tick={{ fontSize: 9, fill: '#0f172a' }}
+                stroke="#0f172a"
               >
-                <Label value={`Elev Diff (${yUnit})`} angle={-90} position="insideLeft" offset={10} fontSize={10} fontWeight="bold" fill="#475569" />
+                <Label value={`Elev Diff (${yUnit})`} angle={-90} position="insideLeft" offset={10} fontSize={10} fontWeight="bold" fill="#0f172a" />
               </YAxis>
 
               <YAxis 
                 yAxisId="right"
                 orientation="right"
-                tick={{ fontSize: 9, fill: '#64748b' }}
-                stroke="#cbd5e1"
+                tick={{ fontSize: 9, fill: '#0f172a' }}
+                stroke="#0f172a"
               >
-                <Label value={`Altitude (${yUnit})`} angle={90} position="insideRight" offset={10} fontSize={10} fontWeight="bold" fill="#475569" />
+                <Label value={`Altitude (${yUnit})`} angle={90} position="insideRight" offset={10} fontSize={10} fontWeight="bold" fill="#0f172a" />
               </YAxis>
 
               <Tooltip 
@@ -277,10 +277,10 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           <table className="w-full text-[10px] border-collapse">
             <thead>
               <tr className="border-b border-slate-200">
-                <th className="text-left py-1 font-bold text-slate-400 uppercase tracking-widest">Point</th>
-                <th className="text-right py-1 font-bold text-slate-400 uppercase tracking-widest">Leg Dist ({isImperial ? 'yd' : 'm'})</th>
-                <th className="text-right py-1 font-bold text-slate-400 uppercase tracking-widest">Leg Elev ({isImperial ? 'ft' : 'm'})</th>
-                <th className="text-right py-1 font-bold text-slate-400 uppercase tracking-widest">Total Elev ({isImperial ? 'ft' : 'm'})</th>
+                <th className="text-left py-1 font-bold text-slate-900 uppercase tracking-widest">Point</th>
+                <th className="text-right py-1 font-bold text-slate-900 uppercase tracking-widest">Leg Dist ({isImperial ? 'yd' : 'm'})</th>
+                <th className="text-right py-1 font-bold text-slate-900 uppercase tracking-widest">Leg Elev ({isImperial ? 'ft' : 'm'})</th>
+                <th className="text-right py-1 font-bold text-slate-900 uppercase tracking-widest">Total Elev ({isImperial ? 'ft' : 'm'})</th>
               </tr>
             </thead>
             <tbody>
@@ -297,8 +297,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                   return (
                     <tr key={i} className="border-b border-slate-100">
                       <td className="py-1 font-bold text-slate-800">{label}</td>
-                      <td className="py-1 text-right font-medium text-slate-600">{legDist.toFixed(1)}</td>
-                      <td className="py-1 text-right font-medium text-slate-600">{(legElev >= 0 ? '+' : '') + legElev.toFixed(1)}</td>
+                      <td className="py-1 text-right font-medium text-slate-900">{legDist.toFixed(1)}</td>
+                      <td className="py-1 text-right font-medium text-slate-900">{(legElev >= 0 ? '+' : '') + legElev.toFixed(1)}</td>
                       <td className="py-1 text-right font-bold text-blue-600">{(totalElev >= 0 ? '+' : '') + totalElev.toFixed(1)}</td>
                     </tr>
                   );
@@ -370,8 +370,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           {isLoadingLidar && (
             <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
               <Loader2 className="animate-spin text-amber-600 mb-4" size={48} />
-              <p className="text-slate-800 font-bold uppercase tracking-widest text-sm">Fetching LiDAR Terrain Data...</p>
-              <p className="text-slate-400 text-xs mt-2">Sampling path at 5m intervals</p>
+              <p className="text-slate-900 font-bold uppercase tracking-widest text-sm">Fetching LiDAR Terrain Data...</p>
+              <p className="text-slate-900 text-xs mt-2">Sampling path at 5m intervals</p>
             </div>
           )}
 
@@ -382,13 +382,13 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 <span className="text-[10px] font-bold text-amber-600 uppercase tracking-[0.3em]">Planning Report Tool</span>
               </div>
               <div className="mt-1.5 flex items-center gap-3">
-                <span className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">LiDAR Source: Scottish Government LiDAR (Phase 1-6)</span>
+                <span className="text-[7px] font-bold text-slate-900 uppercase tracking-widest">LiDAR Source: Scottish Government LiDAR (Phase 1-6)</span>
                 <span className="text-[7px] font-medium text-blue-500 underline">https://remotesensingdata.gov.scot/</span>
               </div>
             </div>
             <div className="flex flex-col items-end text-right">
               <span className="text-base font-black text-slate-900 uppercase">Hole {currentTrack?.holeNumber || currentIndex + 1}</span>
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{reportTitle}</span>
+              <span className="text-[9px] font-bold text-slate-900 uppercase tracking-widest">{reportTitle}</span>
             </div>
           </div>
 
@@ -399,11 +399,11 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             </div>
           ) : (
             <div className="flex-1 flex items-center justify-center border-2 border-dashed border-slate-100 rounded-[2rem]">
-              <p className="text-slate-300 font-bold uppercase tracking-widest">No Profile Data Available</p>
+              <p className="text-slate-900 font-bold uppercase tracking-widest">No Profile Data Available</p>
             </div>
           )}
 
-          <div className="mt-auto pt-8 border-t border-slate-100 flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+          <div className="mt-auto pt-8 border-t border-slate-100 flex justify-between items-center text-[9px] font-bold text-slate-900 uppercase tracking-widest">
             <span>Generated by Scottish Golf Rating Toolkit</span>
             <span>{new Date().toLocaleDateString()}</span>
             <span>Page {currentIndex + 1} of {tracks.length}</span>
@@ -445,7 +445,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
               <FileText size={32} className="text-white" />
             </div>
             <h2 className="text-2xl font-bold text-white text-center mb-2">Report Title</h2>
-            <p className="text-white-400 text-xs text-center mb-8 leading-relaxed">
+            <p className="text-slate-400 text-xs text-center mb-8 leading-relaxed">
               Enter a title for your planning report, such as the name of the golf course or project.
             </p>
             
