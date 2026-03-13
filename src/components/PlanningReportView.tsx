@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Printer, RotateCcw, BarChart3, Download, Loader2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Printer, RotateCcw, BarChart3, Download, Loader2, FileText } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import {
@@ -39,6 +39,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   const [reportUnits, setReportUnits] = useState<UnitSystem>(units);
   const [isExporting, setIsExporting] = useState(false);
   const [isLoadingLidar, setIsLoadingLidar] = useState(false);
+  const [reportTitle, setReportTitle] = useState(fileName);
+  const [showTitleDialog, setShowTitleDialog] = useState(true);
   const [profiles, setProfiles] = useState<Record<string, { scratch: ProfilePoint[], bogey: ProfilePoint[] }>>({});
   const profilesRef = useRef(profiles);
   const isLoadingLidarRef = useRef(isLoadingLidar);
@@ -182,14 +184,14 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     const yUnit = isImperial ? 'Feet' : 'Metres';
 
     return (
-      <div className="flex flex-col w-full mb-12">
+      <div className="flex flex-col w-full mb-6">
         <div className="flex justify-between items-center mb-2 px-4">
           <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">{title} Profile</h3>
           <div className="flex gap-4 text-[10px] font-bold text-slate-400">
             <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }}></div> Elevation Profile</span>
           </div>
         </div>
-        <div className="h-[300px] bg-slate-50 rounded-xl p-4 border border-slate-100">
+        <div className="h-[260px] bg-slate-50 rounded-xl p-4 border border-slate-100">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={data} margin={{ top: 10, right: 40, left: 40, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
@@ -362,7 +364,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
 
         <div 
           ref={reportRef}
-          className="bg-white w-full max-w-[210mm] shadow-2xl flex flex-col p-12 border border-slate-200 relative"
+          className="bg-white w-full max-w-[210mm] shadow-2xl flex flex-col p-8 border border-slate-200 relative"
           style={{ minHeight: '297mm' }}
         >
           {isLoadingLidar && (
@@ -373,21 +375,27 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             </div>
           )}
 
-          <div className="flex justify-between items-end border-b-2 border-slate-100 pb-6 mb-10">
+          <div className="flex justify-between items-end border-b-2 border-slate-100 pb-4 mb-6">
             <div className="flex flex-col">
-              <h1 className="text-3xl font-black text-slate-900 uppercase tracking-tighter leading-none">Scottish Golf</h1>
-              <span className="text-[11px] font-bold text-amber-600 uppercase tracking-[0.4em] mt-1">Planning Report Tool</span>
+              <div className="flex items-baseline gap-3">
+                <h1 className="text-2xl font-black text-slate-900 uppercase tracking-tighter leading-none">Scottish Golf</h1>
+                <span className="text-[10px] font-bold text-amber-600 uppercase tracking-[0.3em]">Planning Report Tool</span>
+              </div>
+              <div className="mt-1.5 flex items-center gap-3">
+                <span className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">LiDAR Source: Scottish Government LiDAR (Phase 1-6)</span>
+                <span className="text-[7px] font-medium text-blue-500 underline">https://remotesensingdata.gov.scot/</span>
+              </div>
             </div>
             <div className="flex flex-col items-end text-right">
-              <span className="text-lg font-black text-slate-900 uppercase">Hole {currentTrack?.holeNumber || currentIndex + 1}</span>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{fileName}</span>
+              <span className="text-base font-black text-slate-900 uppercase">Hole {currentTrack?.holeNumber || currentIndex + 1}</span>
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{reportTitle}</span>
             </div>
           </div>
 
           {currentProfile ? (
             <div className="flex-1 flex flex-col">
-              {renderChart(currentProfile.scratch, 'Scratch', '#10b981')}
-              {renderChart(currentProfile.bogey, 'Bogey', '#facc15')}
+              {renderChart(currentProfile.scratch, `Scratch ${currentTrack?.genderRated ? `(${currentTrack.genderRated})` : ''}`, '#10b981')}
+              {renderChart(currentProfile.bogey, `Bogey ${currentTrack?.genderRated ? `(${currentTrack.genderRated})` : ''}`, '#facc15')}
             </div>
           ) : (
             <div className="flex-1 flex items-center justify-center border-2 border-dashed border-slate-100 rounded-[2rem]">
@@ -410,9 +418,17 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
         >
           <ChevronLeft size={20} /> Previous
         </button>
-        <span className="text-white/60 font-bold text-xs uppercase tracking-widest">
-          Hole {currentTrack?.holeNumber || currentIndex + 1} of {tracks.length}
-        </span>
+        <div className="flex flex-col items-center gap-1">
+          <span className="text-white/60 font-bold text-xs uppercase tracking-widest">
+            Hole {currentTrack?.holeNumber || currentIndex + 1} of {tracks.length}
+          </span>
+          <button 
+            onClick={() => setShowTitleDialog(true)}
+            className="text-[9px] text-amber-400 font-bold uppercase tracking-widest hover:underline"
+          >
+            Edit Report Title
+          </button>
+        </div>
         <button 
           onClick={() => setCurrentIndex(prev => Math.min(tracks.length - 1, prev + 1))}
           disabled={currentIndex === tracks.length - 1}
@@ -421,6 +437,40 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           Next <ChevronRight size={20} />
         </button>
       </div>
+
+      {showTitleDialog && (
+        <div className="fixed inset-0 z-[3000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="bg-slate-900 border border-white/10 w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 duration-300">
+            <div className="w-16 h-16 bg-amber-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-amber-600/20 mx-auto">
+              <FileText size={32} className="text-white" />
+            </div>
+            <h2 className="text-2xl font-bold text-white text-center mb-2">Report Title</h2>
+            <p className="text-white-400 text-xs text-center mb-8 leading-relaxed">
+              Enter a title for your planning report, such as the name of the golf course or project.
+            </p>
+            
+            <div className="space-y-6">
+              <div className="relative">
+                <input 
+                  type="text"
+                  value={reportTitle}
+                  onChange={(e) => setReportTitle(e.target.value)}
+                  placeholder="e.g. St Andrews Old Course"
+                  className="w-full bg-slate-950 border border-white/10 rounded-2xl py-4 px-6 text-white focus:outline-none focus:border-amber-500 transition-all text-lg font-bold"
+                  autoFocus
+                />
+              </div>
+              
+              <button 
+                onClick={() => setShowTitleDialog(false)}
+                className="w-full bg-amber-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-amber-600/20 active:scale-95 transition-all uppercase tracking-widest text-sm"
+              >
+                Set Title & Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

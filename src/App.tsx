@@ -53,6 +53,8 @@ import { CoursePlanning } from './components/CoursePlanning';
 import { PlanningReportView } from './components/PlanningReportView';
 
 /** --- LIDAR GRID --- **/
+const lidarCoverageCache = new Map<string, boolean>();
+
 const LidarGrid = () => {
   const map = useMap();
   
@@ -61,17 +63,56 @@ const LidarGrid = () => {
 
     // @ts-ignore
     const GridLayer = L.GridLayer.extend({
-      createTile: function (coords: any) {
+      createTile: function (coords: any, done: any) {
         const tile = L.DomUtil.create('canvas', 'leaflet-tile');
         const size = this.getTileSize();
         tile.width = size.x;
         tile.height = size.y;
         const ctx = tile.getContext('2d');
-        if (!ctx) return tile;
+        if (!ctx) {
+          setTimeout(() => done(null, tile), 0);
+          return tile;
+        }
 
         const zoom = coords.z;
-        if (zoom < 17) return tile;
+        if (zoom < 17) {
+          setTimeout(() => done(null, tile), 0);
+          return tile;
+        }
 
+        // Check cache first
+        const cacheKey = `${coords.x},${coords.y},${coords.z}`;
+        if (lidarCoverageCache.has(cacheKey)) {
+          if (lidarCoverageCache.get(cacheKey)) {
+            this._drawDots(ctx, coords, size, zoom, tile);
+          }
+          setTimeout(() => done(null, tile), 0);
+          return tile;
+        }
+
+        // Fetch availability for this tile
+        const nwPoint = coords.scaleBy(size);
+        const centerPoint = nwPoint.add(L.point(size.x / 2, size.y / 2));
+        const center = map.unproject(centerPoint, zoom);
+
+        fetch(`/api/lidar?lat=${center.lat}&lng=${center.lng}`)
+          .then(res => {
+            const available = res.ok;
+            lidarCoverageCache.set(cacheKey, available);
+            if (available) {
+              this._drawDots(ctx, coords, size, zoom, tile);
+            }
+            done(null, tile);
+          })
+          .catch(() => {
+            lidarCoverageCache.set(cacheKey, false);
+            done(null, tile);
+          });
+
+        return tile;
+      },
+
+      _drawDots: function(ctx: CanvasRenderingContext2D, coords: any, size: any, zoom: number, tile: HTMLCanvasElement) {
         const nwPoint = coords.scaleBy(size);
         const sePoint = coords.add(L.point(1, 1)).scaleBy(size);
         const nw = map.unproject(nwPoint, zoom);
@@ -95,8 +136,6 @@ const LidarGrid = () => {
             }
           }
         }
-
-        return tile;
       }
     });
 
@@ -2165,7 +2204,8 @@ const App: React.FC = () => {
       const coords = (item.type === 'Track' && item.raterPathPoints ? item.raterPathPoints : item.points).map(p => `${p.lng},${p.lat},${p.alt || 0}`).join(' ');
       const pivotData = item.pivotPoints ? `|Pivots:${JSON.stringify(item.pivotPoints.map(p => ({ lat: p.point.lat, lng: p.point.lng, alt: p.point.alt, type: p.type })))}` : '';
       const planningTag = item.isPlanning ? '|Planning:true' : '';
-      kml += `<Placemark><name>${item.type} - Hole ${item.holeNumber || '?'}</name><description>Hole:${item.holeNumber || '?'}; Type: ${item.type}${pivotData}${planningTag}</description>${item.type === 'Green' ? `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords} ${item.points[0].lng},${item.points[0].lat},${item.points[0].alt || 0}</coordinates></LinearRing></outerBoundaryIs></Polygon>` : `<LineString><coordinates>${coords}</coordinates></LineString>`}</Placemark>`;
+      const genderTag = item.genderRated ? `|Gender:${item.genderRated}` : '';
+      kml += `<Placemark><name>${item.type} - Hole ${item.holeNumber || '?'}</name><description>Hole:${item.holeNumber || '?'}; Type: ${item.type}${pivotData}${planningTag}${genderTag}</description>${item.type === 'Green' ? `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords} ${item.points[0].lng},${item.points[0].lat},${item.points[0].alt || 0}</coordinates></LinearRing></outerBoundaryIs></Polygon>` : `<LineString><coordinates>${coords}</coordinates></LineString>`}</Placemark>`;
     });
     kml += `</Document></kml>`;
     const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
@@ -2204,7 +2244,20 @@ const App: React.FC = () => {
         const distToStart = calculateDistance(first, last);
         const isActuallyGreen = !!p.getElementsByTagName("Polygon")[0] || descStr.includes("Type: Green") || nameStr.startsWith("Green") || distToStart < 5;
         
-        const record: SavedRecord = { id: Math.random().toString(36).substr(2, 9), date: Date.now(), type: isActuallyGreen ? 'Green' : 'Track', points, holeNumber: extractedHole || undefined, primaryValue: fileName.substring(0, 6) + "...", secondaryValue: 'KML Data' };
+        let genderRated: RatingGender | undefined = undefined;
+        const genderMatch = descStr.match(/\|Gender:(Men|Women)/);
+        if (genderMatch) genderRated = genderMatch[1] as RatingGender;
+
+        const record: SavedRecord = { 
+          id: Math.random().toString(36).substr(2, 9), 
+          date: Date.now(), 
+          type: isActuallyGreen ? 'Green' : 'Track', 
+          points, 
+          holeNumber: extractedHole || undefined, 
+          primaryValue: fileName.substring(0, 6) + "...", 
+          secondaryValue: 'KML Data',
+          genderRated
+        };
         newItems.push(record);
       }
       setHistory(prev => [...newItems, ...prev]);
@@ -2238,6 +2291,10 @@ const App: React.FC = () => {
         const isTrack = !!p.getElementsByTagName("LineString")[0] || descStr.includes("Type: Track") || nameStr.toLowerCase().includes("track");
         const isPlanning = descStr.includes("|Planning:true");
         
+        let genderRated: RatingGender | undefined = undefined;
+        const genderMatch = descStr.match(/\|Gender:(Men|Women)/);
+        if (genderMatch) genderRated = genderMatch[1] as RatingGender;
+
         if (isTrack || isPlanning) {
           let pivotPoints: PivotRecord[] = [];
           const pivotMatch = descStr.match(/\|Pivots:(.*?)(\||$)/);
@@ -2260,7 +2317,8 @@ const App: React.FC = () => {
             pivotPoints,
             holeNumber: extractedHole || undefined, 
             primaryValue: nameStr || `Track ${i+1}`, 
-            isPlanning: true 
+            isPlanning: true,
+            genderRated
           };
           tracks.push(record);
         }
@@ -2303,8 +2361,21 @@ const App: React.FC = () => {
         const distToStart = calculateDistance(first, last);
         const isActuallyGreen = !!p.getElementsByTagName("Polygon")[0] || descStr.includes("Type: Green") || nameStr.toLowerCase().includes("green") || distToStart < 5;
         
+        let genderRated: RatingGender | undefined = undefined;
+        const genderMatch = descStr.match(/\|Gender:(Men|Women)/);
+        if (genderMatch) genderRated = genderMatch[1] as RatingGender;
+
         if (isActuallyGreen) {
-          const record: SavedRecord = { id: Math.random().toString(36).substr(2, 9), date: Date.now(), type: 'Green', points, holeNumber: extractedHole || undefined, primaryValue: nameStr || `Green ${i+1}`, secondaryValue: 'Report Data' };
+          const record: SavedRecord = { 
+            id: Math.random().toString(36).substr(2, 9), 
+            date: Date.now(), 
+            type: 'Green', 
+            points, 
+            holeNumber: extractedHole || undefined, 
+            primaryValue: nameStr || `Green ${i+1}`, 
+            secondaryValue: 'Report Data',
+            genderRated
+          };
           greens.push(record);
         }
       }
