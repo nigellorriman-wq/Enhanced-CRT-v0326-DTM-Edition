@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { MapContainer, TileLayer, WMSTileLayer, CircleMarker, Polyline, Circle, useMap, Polygon, useMapEvents, Marker } from 'react-leaflet';
+import { MapContainer, TileLayer, WMSTileLayer, CircleMarker, Polyline, Circle, useMap, Polygon, useMapEvents, Marker, Rectangle } from 'react-leaflet';
 import L from 'leaflet';
 import { 
   ChevronLeft,
@@ -42,7 +42,8 @@ import {
   ChevronRight,
   Settings,
   Search,
-  BarChart3
+  BarChart3,
+  MousePointer2
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -54,6 +55,44 @@ import { PlanningReportView } from './components/PlanningReportView';
 
 /** --- LIDAR GRID --- **/
 const lidarCoverageCache = new Map<string, boolean>();
+
+const SelectionHandler = ({ active, onSelectionComplete }: { active: boolean, onSelectionComplete: (bounds: L.LatLngBounds) => void }) => {
+  const [startPos, setStartPos] = useState<L.LatLng | null>(null);
+  const [currentPos, setCurrentPos] = useState<L.LatLng | null>(null);
+  const map = useMap();
+
+  useEffect(() => {
+    if (active) {
+      map.dragging.disable();
+    } else {
+      map.dragging.enable();
+    }
+  }, [active, map]);
+
+  useMapEvents({
+    mousedown(e) {
+      if (!active) return;
+      setStartPos(e.latlng);
+      setCurrentPos(e.latlng);
+    },
+    mousemove(e) {
+      if (!active || !startPos) return;
+      setCurrentPos(e.latlng);
+    },
+    mouseup(e) {
+      if (!active || !startPos) return;
+      const bounds = L.latLngBounds(startPos, e.latlng);
+      onSelectionComplete(bounds);
+      setStartPos(null);
+      setCurrentPos(null);
+    }
+  });
+
+  if (!active || !startPos || !currentPos) return null;
+
+  const bounds = L.latLngBounds(startPos, currentPos);
+  return <Rectangle bounds={bounds} pathOptions={{ color: '#10b981', weight: 2, fillOpacity: 0.2, dashArray: '5, 5' }} />;
+};
 
 const LidarGrid = () => {
   const map = useMap();
@@ -201,6 +240,20 @@ export interface SavedRecord {
     bogey: number; 
   };
   isPlanning?: boolean;
+}
+
+export interface OfflineLidarData {
+  courseName: string;
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+  resolution: number;
+  rows: number;
+  cols: number;
+  grid?: Float32Array | (number | null)[];
+  blob?: Blob;
+  headerOffset?: number;
 }
 
 /** --- SHOT TARGETS (Yards) --- **/
@@ -1683,6 +1736,284 @@ const ReportView: React.FC<{
   );
 };
 
+const TerrainManager: React.FC<{ 
+  map: L.Map | null, 
+  onClose: () => void, 
+  onDownload: (data: OfflineLidarData) => void,
+  currentOffline: OfflineLidarData | null,
+  onLoad: (data: OfflineLidarData) => void,
+  onDrawMode: () => void,
+  selectionBounds: L.LatLngBounds | null
+}> = ({ map, onClose, onDownload, currentOffline, onLoad, onDrawMode, selectionBounds }) => {
+  const [courseName, setCourseName] = useState(currentOffline?.courseName || '');
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [pointsLoaded, setPointsLoaded] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const buffer = event.target?.result as ArrayBuffer;
+          const view = new DataView(buffer);
+          
+          // Check for binary magic "SGLD"
+          const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+          
+          if (magic === 'SGLD') {
+            const version = view.getUint8(4);
+            let offset = 5;
+            const nameLen = view.getUint8(offset++);
+            const decoder = new TextDecoder();
+            const courseName = decoder.decode(new Uint8Array(buffer, offset, nameLen));
+            offset += nameLen;
+            
+            const minLat = view.getFloat64(offset); offset += 8;
+            const maxLat = view.getFloat64(offset); offset += 8;
+            const minLng = view.getFloat64(offset); offset += 8;
+            const maxLng = view.getFloat64(offset); offset += 8;
+            const resolution = view.getFloat32(offset); offset += 4;
+            const rows = view.getInt32(offset); offset += 4;
+            const cols = view.getInt32(offset); offset += 4;
+            
+            const padding = (4 - (offset % 4)) % 4;
+            offset += padding;
+            
+            // Instead of loading the whole grid, we store the blob and the offset
+            onLoad({ 
+              courseName, minLat, maxLat, minLng, maxLng, resolution, rows, cols, 
+              blob: file, 
+              headerOffset: offset 
+            });
+          } else {
+            // Fallback to JSON
+            const text = new TextDecoder().decode(buffer);
+            const data = JSON.parse(text) as OfflineLidarData;
+            if (data.grid && data.minLat && data.maxLat) {
+              onLoad(data);
+            } else {
+              setError('Invalid .sgld file format');
+            }
+          }
+        } catch (err) {
+          setError('Failed to parse terrain file');
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+    // Close after processing all files (or at least starting them)
+    // In a real app we might want to wait for all to finish, but this is fine for now
+    setTimeout(onClose, 500);
+  };
+
+  /*
+  const startDownload = async () => {
+    if (!map || !courseName) return;
+    setIsDownloading(true);
+    setPointsLoaded(0);
+    setError(null);
+    
+    const bounds = selectionBounds || map.getBounds();
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+    
+    const resolution = 1; // 1m grid
+    const latStep = (resolution / 111320);
+    const lngStep = (resolution / (111320 * Math.cos(sw.lat * Math.PI / 180)));
+    
+    const totalRows = Math.ceil((ne.lat - sw.lat) / latStep);
+    const totalCols = Math.ceil((ne.lng - sw.lng) / lngStep);
+    const totalPoints = totalRows * totalCols;
+    
+    // Chunking logic: split into 10x10 chunks (exactly 100 points each) for granular progress feedback
+    const CHUNK_SIZE = 10;
+    const numRowChunks = Math.ceil(totalRows / CHUNK_SIZE);
+    const numColChunks = Math.ceil(totalCols / CHUNK_SIZE);
+    const totalChunks = numRowChunks * numColChunks;
+
+    console.log(`[TerrainManager] Starting download: ${totalPoints} points in ${totalChunks} chunks`);
+
+    for (let rChunk = 0; rChunk < numRowChunks; rChunk++) {
+      for (let cChunk = 0; cChunk < numColChunks; cChunk++) {
+        const startRow = rChunk * CHUNK_SIZE;
+        const endRow = Math.min(startRow + CHUNK_SIZE, totalRows);
+        const startCol = cChunk * CHUNK_SIZE;
+        const endCol = Math.min(startCol + CHUNK_SIZE, totalCols);
+        
+        const chunkRows = endRow - startRow;
+        const chunkCols = endCol - startCol;
+        
+        const chunkSwLat = ne.lat - (endRow * latStep);
+        const chunkNeLat = ne.lat - (startRow * latStep);
+        const chunkSwLng = sw.lng + (startCol * lngStep);
+        const chunkNeLng = sw.lng + (endCol * lngStep);
+
+        try {
+          const url = `/api/lidar-bulk?swLat=${chunkSwLat}&swLng=${chunkSwLng}&neLat=${chunkNeLat}&neLng=${chunkNeLng}&resolution=${resolution}&rows=${chunkRows}&cols=${chunkCols}`;
+          const res = await fetch(url);
+          
+          if (!res.ok) {
+            const errorText = await res.text();
+            throw new Error(`Server error (${res.status}): ${errorText.substring(0, 100)}`);
+          }
+          
+          const contentType = res.headers.get('Content-Type');
+          if (contentType && contentType.includes('application/json')) {
+            const errorJson = await res.json();
+            throw new Error(`API Error: ${errorJson.error || 'Unknown error'}`);
+          }
+          
+          const buffer = await res.arrayBuffer();
+          
+          // CRITICAL: Fix for "byte length should be a multiple of 4"
+          if (buffer.byteLength % 4 !== 0) {
+            throw new Error(`Invalid binary data received: byte length ${buffer.byteLength} is not a multiple of 4`);
+          }
+          
+          const grid = new Float32Array(buffer);
+          
+          // Create binary blob for this chunk
+          const encoder = new TextEncoder();
+          const chunkName = `${courseName}_part_${rChunk + 1}_${cChunk + 1}`;
+          const nameBytes = encoder.encode(chunkName);
+          const headerSize = 4 + 1 + 1 + nameBytes.length + 32 + 4 + 8;
+          const padding = (4 - (headerSize % 4)) % 4;
+          const fileBuffer = new ArrayBuffer(headerSize + padding + grid.byteLength);
+          const view = new DataView(fileBuffer);
+          
+          view.setUint8(0, 'S'.charCodeAt(0));
+          view.setUint8(1, 'G'.charCodeAt(0));
+          view.setUint8(2, 'L'.charCodeAt(0));
+          view.setUint8(3, 'D'.charCodeAt(0));
+          view.setUint8(4, 2);
+          view.setUint8(5, nameBytes.length);
+          let offset = 6;
+          new Uint8Array(fileBuffer, offset, nameBytes.length).set(nameBytes);
+          offset += nameBytes.length;
+          
+          view.setFloat64(offset, chunkSwLat); offset += 8;
+          view.setFloat64(offset, chunkNeLat); offset += 8;
+          view.setFloat64(offset, chunkSwLng); offset += 8;
+          view.setFloat64(offset, chunkNeLng); offset += 8;
+          view.setFloat32(offset, resolution); offset += 4;
+          view.setInt32(offset, chunkRows); offset += 4;
+          view.setInt32(offset, chunkCols); offset += 4;
+          
+          offset += padding;
+          // Use grid.length to avoid "offset is out of bounds" if there's a slight mismatch
+          new Float32Array(fileBuffer, offset, grid.length).set(grid);
+          
+          const blob = new Blob([fileBuffer], { type: 'application/octet-stream' });
+          const downloadUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          a.download = `${chunkName.replace(/\s+/g, '_')}.sgld`;
+          // Only auto-download if the number of chunks is reasonable to avoid browser flooding
+          if (totalChunks <= 100) {
+            a.click();
+          }
+          
+          // If it's the first chunk, we load it into the app
+          if (rChunk === 0 && cChunk === 0) {
+            onDownload({
+              courseName: chunkName,
+              minLat: chunkSwLat, maxLat: chunkNeLat,
+              minLng: chunkSwLng, maxLng: chunkNeLng,
+              resolution, rows: chunkRows, cols: chunkCols,
+              blob, headerOffset: offset
+            });
+          }
+        } catch (e: any) {
+          console.error(`[TerrainManager] Error downloading chunk:`, e);
+          setError(`Error downloading part ${rChunk * numColChunks + cChunk + 1}/${totalChunks}: ${e.message}`);
+          setIsDownloading(false);
+          return;
+        }
+        
+        setPointsLoaded(prev => prev + 100);
+        setProgress(Math.round(((rChunk * numColChunks + cChunk + 1) / totalChunks) * 100));
+      }
+    }
+    
+    setIsDownloading(false);
+    if (!error) onClose();
+  };
+  */
+
+  return (
+    <div className="fixed inset-0 z-[3000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+      <div className="bg-slate-900 border border-white/10 w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 duration-300">
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-amber-600 rounded-full flex items-center justify-center shadow-lg shadow-amber-600/20">
+              <Cpu size={20} className="text-white" />
+            </div>
+            <h2 className="text-xl font-bold text-white">Terrain Manager</h2>
+          </div>
+          <button onClick={onClose} className="p-2 bg-slate-800 rounded-full text-slate-400 active:scale-90"><X size={20} /></button>
+        </div>
+
+        {currentOffline ? (
+          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4 mb-6 flex items-center gap-4">
+            <CheckCircle2 className="text-emerald-500" size={24} />
+            <div>
+              <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Active Offline Map</p>
+              <p className="text-sm font-bold text-white">{currentOffline.courseName}</p>
+              <p className="text-[9px] text-emerald-400/60 uppercase mt-0.5">{currentOffline.rows * currentOffline.cols} points • {currentOffline.resolution}m grid</p>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-blue-500/5 border border-blue-500/10 rounded-2xl p-4 mb-6 flex items-center gap-4">
+            <Info className="text-blue-400" size={24} />
+            <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest leading-relaxed">No offline terrain loaded. Download the current map area or import a .sgld file.</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-4 mb-6 flex items-center gap-3">
+            <AlertCircle className="text-rose-500" size={18} />
+            <p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">{error}</p>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <div className="flex flex-col gap-2">
+            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2">Course/Project Name</label>
+            <input 
+              type="text"
+              value={courseName}
+              onChange={(e) => setCourseName(e.target.value)}
+              placeholder="e.g. St Andrews Old Course"
+              className="w-full bg-slate-950 border border-white/10 rounded-2xl py-4 px-6 text-white focus:outline-none focus:border-amber-500 transition-all text-sm font-bold"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3">
+            <label className="flex items-center justify-center gap-2 py-4 bg-slate-800 border border-white/5 text-slate-400 font-bold rounded-2xl text-[10px] uppercase tracking-widest cursor-pointer active:scale-95 transition-all">
+              <Upload size={16} />
+              Import .sgld
+              <input type="file" accept=".sgld" multiple onChange={handleFileImport} className="hidden" />
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MapRef = ({ onMap }: { onMap: (map: L.Map) => void }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (map) onMap(map);
+  }, [map]);
+  return null;
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>('landing');
   const [units, setUnits] = useState<UnitSystem>('Yards');
@@ -1729,6 +2060,11 @@ const App: React.FC = () => {
   const [reportFileName, setReportFileName] = useState("");
   const [planningReportTracks, setPlanningReportTracks] = useState<SavedRecord[]>([]);
   const [planningReportFileName, setPlanningReportFileName] = useState("");
+  const [offlineLidarChunks, setOfflineLidarChunks] = useState<OfflineLidarData[]>([]);
+  const [showTerrainManager, setShowTerrainManager] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectionBounds, setSelectionBounds] = useState<L.LatLngBounds | null>(null);
+  const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
   const CONCAVITY_FIXED = 0.82;
   const greenStartRef = useRef<GeoPoint | null>(null);
   const lidarFetchRef = useRef<number>(0);
@@ -1757,6 +2093,39 @@ const App: React.FC = () => {
   }, [mapCenter, isFollowing]);
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
+    // Check offline data first
+    for (const chunk of offlineLidarChunks) {
+      if (lat >= chunk.minLat && lat <= chunk.maxLat && lng >= chunk.minLng && lng <= chunk.maxLng) {
+        const row = Math.floor(((chunk.maxLat - lat) / (chunk.maxLat - chunk.minLat)) * (chunk.rows - 1));
+        const col = Math.floor(((lng - chunk.minLng) / (chunk.maxLng - chunk.minLng)) * (chunk.cols - 1));
+        const index = row * chunk.cols + col;
+        
+        // 1. Check memory grid first (fastest)
+        if (chunk.grid) {
+          const val = chunk.grid[index];
+          if (val !== null && val !== undefined && !isNaN(val as number)) {
+            setLidarStatus('available');
+            return val as number;
+          }
+        } 
+        // 2. Fallback to on-demand blob reading (memory efficient)
+        else if (chunk.blob && chunk.headerOffset !== undefined) {
+          try {
+            const offset = chunk.headerOffset + (index * 4);
+            const slice = chunk.blob.slice(offset, offset + 4);
+            const buffer = await slice.arrayBuffer();
+            const val = new Float32Array(buffer)[0];
+            if (!isNaN(val)) {
+              setLidarStatus('available');
+              return val;
+            }
+          } catch (e) {
+            console.error('Failed to read elevation from blob', e);
+          }
+        }
+      }
+    }
+
     const fetchId = Date.now();
     lidarFetchRef.current = fetchId;
     setLidarStatus('loading');
@@ -2506,7 +2875,13 @@ const App: React.FC = () => {
       ) : view === 'report' ? (
         <ReportView greens={reportGreens} fileName={reportFileName} onClose={() => setView('landing')} units={units} />
       ) : view === 'planning_report' ? (
-        <PlanningReportView tracks={planningReportTracks} fileName={planningReportFileName} onClose={() => setView('landing')} units={units} />
+        <PlanningReportView 
+          tracks={planningReportTracks} 
+          fileName={planningReportFileName} 
+          onClose={() => setView('landing')} 
+          units={units} 
+          offlineLidarChunks={offlineLidarChunks} 
+        />
       ) : view === 'wcs' ? (
         <WCSAnalyzer onBack={() => setView('landing')} />
       ) : view === 'planning' ? (
@@ -2556,6 +2931,7 @@ const App: React.FC = () => {
                 <Crosshair size={20} className={isFollowing && !isPlanningSession ? 'animate-pulse' : ''} />
               </button>
               <button onClick={() => setUnits(u => u === 'Yards' ? 'Metres' : 'Yards')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-emerald-400 shadow-2xl active:scale-90"><Ruler size={20} /></button>
+              {/* <button onClick={() => setShowTerrainManager(true)} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-amber-400 shadow-2xl active:scale-90"><Cpu size={20} /></button> */}
               <button onClick={() => setMapStyle(s => s === 'Street' ? 'Satellite' : s === 'Satellite' ? 'LiDAR DTM' : 'Street')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-blue-400 shadow-2xl active:scale-90"><Layers size={20} /></button>
             </div>
           </div>
@@ -2563,6 +2939,21 @@ const App: React.FC = () => {
             {(pos || viewingRecord) ? (
               <>
                 <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
+                <MapRef onMap={setMapInstance} />
+                <SelectionHandler 
+                  active={selectionMode} 
+                  onSelectionComplete={(bounds) => {
+                    setSelectionBounds(bounds);
+                    setSelectionMode(false);
+                    setShowTerrainManager(true);
+                  }} 
+                />
+                {selectionBounds && (
+                  <Rectangle 
+                    bounds={selectionBounds} 
+                    pathOptions={{ color: '#10b981', weight: 2, fillOpacity: 0.1 }} 
+                  />
+                )}
                 <TileLayer 
                   url={(mapStyle === 'Satellite' || mapStyle === 'LiDAR DTM') 
                     ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" 
@@ -2614,32 +3005,6 @@ const App: React.FC = () => {
                   onMapMove={(lat, lng) => setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null })}
                   onZoomChange={setCurrentZoom}
                 />
-
-                {mapStyle === 'LiDAR DTM' && (
-                  <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] pointer-events-none">
-                    {currentZoom < 10 ? (
-                      <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Zoom in for LiDAR</span>
-                      </div>
-                    ) : (lidarLayerLoading || lidarStatus === 'loading') ? (
-                      <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
-                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Loading LiDAR Terrain...</span>
-                      </div>
-                    ) : lidarStatus === 'error' ? (
-                      <div className="bg-rose-900/80 backdrop-blur-md border border-rose-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
-                        <AlertTriangle size={12} className="text-rose-400" />
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-rose-400">LiDAR Data Unavailable Here</span>
-                      </div>
-                    ) : lidarStatus === 'available' ? (
-                      <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
-                        <CheckCircle2 size={12} className="text-emerald-400" />
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">LiDAR Active</span>
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-
 
                 <AccuracyOvals 
                   pos={pos} 
@@ -2902,6 +3267,30 @@ const App: React.FC = () => {
             </div>
           )}
           <div className="absolute inset-x-0 bottom-0 z-[1000] p-4 pointer-events-none flex flex-col gap-2 items-center pb-12">
+            {mapStyle === 'LiDAR DTM' && (
+              <div className="pointer-events-none mb-2">
+                {currentZoom < 10 ? (
+                  <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Zoom in for LiDAR</span>
+                  </div>
+                ) : (lidarLayerLoading || lidarStatus === 'loading') ? (
+                  <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Loading LiDAR Terrain...</span>
+                  </div>
+                ) : lidarStatus === 'error' ? (
+                  <div className="bg-rose-900/80 backdrop-blur-md border border-rose-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
+                    <AlertTriangle size={12} className="text-rose-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-rose-400">LiDAR Data Unavailable Here</span>
+                  </div>
+                ) : lidarStatus === 'available' ? (
+                  <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
+                    <CheckCircle2 size={12} className="text-emerald-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">LiDAR Active</span>
+                  </div>
+                ) : null}
+              </div>
+            )}
             <div className="flex flex-col gap-2 w-full max-w-[340px]">
               <div className="pointer-events-auto bg-slate-900/95 border border-white/20 rounded-[2.8rem] px-6 py-4 w-full shadow-2xl backdrop-blur-md select-text">
                 {view === 'track' ? (
@@ -3147,6 +3536,27 @@ const App: React.FC = () => {
             )}
           </div>
         </div>
+      )}
+      {showTerrainManager && (
+        <TerrainManager 
+          map={mapInstance} 
+          onClose={() => {
+            setShowTerrainManager(false);
+            setSelectionMode(false);
+          }} 
+          onDownload={(data) => {
+            setOfflineLidarChunks(prev => [...prev, data]);
+          }}
+          currentOffline={offlineLidarChunks.length > 0 ? offlineLidarChunks[0] : null}
+          onLoad={(data) => {
+            setOfflineLidarChunks(prev => [...prev, data]);
+          }}
+          onDrawMode={() => {
+            setSelectionMode(true);
+            setShowTerrainManager(false);
+          }}
+          selectionBounds={selectionBounds}
+        />
       )}
       <style>{`.leaflet-tile-pane { filter: brightness(0.8) contrast(1.1) saturate(0.85); }.no-scrollbar::-webkit-scrollbar { display: none; }.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
     </div>

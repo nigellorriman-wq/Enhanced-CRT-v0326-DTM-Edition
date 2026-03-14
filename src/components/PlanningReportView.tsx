@@ -15,13 +15,14 @@ import {
   Label,
   ReferenceLine
 } from 'recharts';
-import { SavedRecord, GeoPoint, UnitSystem, calculateDistance } from '../App';
+import { SavedRecord, GeoPoint, UnitSystem, calculateDistance, OfflineLidarData } from '../App';
 
 interface PlanningReportViewProps {
   tracks: SavedRecord[];
   fileName: string;
   onClose: () => void;
   units: UnitSystem;
+  offlineLidarChunks?: OfflineLidarData[];
 }
 
 interface ProfilePoint {
@@ -34,7 +35,7 @@ interface ProfilePoint {
   isPivot?: boolean;
 }
 
-export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, fileName, onClose, units }) => {
+export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, fileName, onClose, units, offlineLidarChunks = [] }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [reportUnits, setReportUnits] = useState<UnitSystem>(units);
   const [isExporting, setIsExporting] = useState(false);
@@ -52,6 +53,33 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   const currentTrack = tracks[currentIndex];
 
   const fetchLidar = async (lat: number, lng: number): Promise<number | null> => {
+    // Check offline data first
+    for (const chunk of offlineLidarChunks) {
+      if (lat >= chunk.minLat && lat <= chunk.maxLat && lng >= chunk.minLng && lng <= chunk.maxLng) {
+        const row = Math.floor(((chunk.maxLat - lat) / (chunk.maxLat - chunk.minLat)) * (chunk.rows - 1));
+        const col = Math.floor(((lng - chunk.minLng) / (chunk.maxLng - chunk.minLng)) * (chunk.cols - 1));
+        const index = row * chunk.cols + col;
+        
+        // 1. Check memory grid first
+        if (chunk.grid) {
+          const val = chunk.grid[index];
+          if (val !== null && val !== undefined && !isNaN(val as number)) return val as number;
+        }
+        // 2. Check blob on-demand
+        else if (chunk.blob && chunk.headerOffset !== undefined) {
+          try {
+            const offset = chunk.headerOffset + (index * 4);
+            const slice = chunk.blob.slice(offset, offset + 4);
+            const buffer = await slice.arrayBuffer();
+            const val = new Float32Array(buffer)[0];
+            if (!isNaN(val)) return val;
+          } catch (e) {
+            console.error('Failed to read elevation from blob in report', e);
+          }
+        }
+      }
+    }
+
     try {
       const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`);
       if (!response.ok) return null;
@@ -194,7 +222,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
         <div className="h-[260px] bg-slate-50 rounded-xl p-4 border border-slate-100">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={data} margin={{ top: 10, right: 40, left: 40, bottom: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" />
               <XAxis 
                 dataKey={xKey} 
                 type="number" 
@@ -243,7 +271,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 <ReferenceLine 
                   key={i} 
                   x={p[xKey]} 
-                  stroke="#94a3b8" 
+                  stroke="#0f172a" 
                   strokeDasharray="3 3" 
                   yAxisId="left"
                 />
@@ -295,11 +323,11 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                   const label = i === pivots.length - 1 ? "End" : `Pivot ${i}`;
 
                   return (
-                    <tr key={i} className="border-b border-slate-100">
-                      <td className="py-1 font-bold text-slate-800">{label}</td>
-                      <td className="py-1 text-right font-medium text-slate-900">{legDist.toFixed(1)}</td>
-                      <td className="py-1 text-right font-medium text-slate-900">{(legElev >= 0 ? '+' : '') + legElev.toFixed(1)}</td>
-                      <td className="py-1 text-right font-bold text-blue-600">{(totalElev >= 0 ? '+' : '') + totalElev.toFixed(1)}</td>
+                    <tr key={i} className="border-b border-slate-200">
+                      <td className="py-1 font-bold text-slate-950">{label}</td>
+                      <td className="py-1 text-right font-medium text-slate-950">{legDist.toFixed(1)}</td>
+                      <td className="py-1 text-right font-medium text-slate-950">{(legElev >= 0 ? '+' : '') + legElev.toFixed(1)}</td>
+                      <td className="py-1 text-right font-bold text-blue-700">{(totalElev >= 0 ? '+' : '') + totalElev.toFixed(1)}</td>
                     </tr>
                   );
                 });
@@ -382,8 +410,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 <span className="text-[10px] font-bold text-amber-600 uppercase tracking-[0.3em]">Planning Report Tool</span>
               </div>
               <div className="mt-1.5 flex items-center gap-3">
-                <span className="text-[7px] font-bold text-slate-900 uppercase tracking-widest">LiDAR Source: Scottish Government LiDAR (Phase 1-6)</span>
-                <span className="text-[7px] font-medium text-blue-500 underline">https://remotesensingdata.gov.scot/</span>
+                <span className="text-[7px] font-bold text-slate-900 uppercase tracking-widest">LiDAR Source: {offlineLidarChunks.length > 0 ? `Offline Cache (${offlineLidarChunks[0].courseName}${offlineLidarChunks.length > 1 ? ` + ${offlineLidarChunks.length - 1} chunks` : ''})` : 'Scottish Government LiDAR (Phase 1-6)'}</span>
+                {offlineLidarChunks.length === 0 && <span className="text-[7px] font-medium text-blue-500 underline">https://remotesensingdata.gov.scot/</span>}
               </div>
             </div>
             <div className="flex flex-col items-end text-right">
