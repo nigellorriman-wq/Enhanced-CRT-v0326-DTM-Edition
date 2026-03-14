@@ -3266,31 +3266,7 @@ const App: React.FC = () => {
               </div>
             </div>
           )}
-          <div className="absolute inset-x-0 bottom-0 z-[1000] p-4 pointer-events-none flex flex-col gap-2 items-center pb-12">
-            {mapStyle === 'LiDAR DTM' && (
-              <div className="pointer-events-none mb-2">
-                {currentZoom < 10 ? (
-                  <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Zoom in for LiDAR</span>
-                  </div>
-                ) : (lidarLayerLoading || lidarStatus === 'loading') ? (
-                  <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Loading LiDAR Terrain...</span>
-                  </div>
-                ) : lidarStatus === 'error' ? (
-                  <div className="bg-rose-900/80 backdrop-blur-md border border-rose-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
-                    <AlertTriangle size={12} className="text-rose-400" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-rose-400">LiDAR Data Unavailable Here</span>
-                  </div>
-                ) : lidarStatus === 'available' ? (
-                  <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-2 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
-                    <CheckCircle2 size={12} className="text-emerald-400" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">LiDAR Active</span>
-                  </div>
-                ) : null}
-              </div>
-            )}
+          <div className="absolute inset-x-0 bottom-0 z-[1000] p-2 pointer-events-none flex flex-col gap-1 items-center pb-2">
             <div className="flex flex-col gap-2 w-full max-w-[340px]">
               <div className="pointer-events-auto bg-slate-900/95 border border-white/20 rounded-[2.8rem] px-6 py-4 w-full shadow-2xl backdrop-blur-md select-text">
                 {view === 'track' ? (
@@ -3517,6 +3493,30 @@ const App: React.FC = () => {
                   </>
                 )}
               </div>
+              {mapStyle === 'LiDAR DTM' && (
+                <div className="pointer-events-none mt-1 flex justify-center">
+                  {currentZoom < 10 ? (
+                    <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl">
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-blue-400">Zoom in for LiDAR</span>
+                    </div>
+                  ) : (lidarLayerLoading || lidarStatus === 'loading') ? (
+                    <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl">
+                      <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-ping" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-blue-400">Loading LiDAR...</span>
+                    </div>
+                  ) : lidarStatus === 'error' ? (
+                    <div className="bg-rose-900/80 backdrop-blur-md border border-rose-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
+                      <AlertTriangle size={10} className="text-rose-400" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-rose-400">LiDAR Unavailable</span>
+                    </div>
+                  ) : lidarStatus === 'available' ? (
+                    <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
+                      <CheckCircle2 size={10} className="text-emerald-400" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">LiDAR Active</span>
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </div>
             {showPivotMenu && (
               <div className="absolute inset-x-0 bottom-[160px] z-[1010] p-4 flex flex-col gap-3 items-center animate-in slide-in-from-bottom duration-200 pointer-events-none">
