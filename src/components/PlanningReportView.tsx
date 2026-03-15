@@ -416,7 +416,21 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             </div>
             <div className="flex flex-col items-end text-right">
               <span className="text-base font-black text-slate-900 uppercase">Hole {currentTrack?.holeNumber || currentIndex + 1}</span>
-              <span className="text-[9px] font-bold text-slate-900 uppercase tracking-widest">{reportTitle}</span>
+              <span className="text-[9px] font-bold text-slate-900 uppercase tracking-widest mb-1">{reportTitle}</span>
+              {(() => {
+                const startPoint = currentTrack?.raterPathPoints?.[0] || currentTrack?.points[0];
+                if (!startPoint) return null;
+                return (
+                  <a 
+                    href={`https://www.google.com/maps?q=${startPoint.lat},${startPoint.lng}`} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-[7px] font-bold text-blue-600 underline uppercase tracking-widest"
+                  >
+                    Google Maps Link
+                  </a>
+                );
+              })()}
             </div>
           </div>
 
