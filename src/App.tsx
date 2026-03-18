@@ -3183,7 +3183,7 @@ const App: React.FC = () => {
                   const isSelected = selectedTileIds.has(tile.id);
                   const isDownloaded = offlineGeoTiffs.some(t => t.id === tile.url);
                   return (
-                    <React.Fragment key={tile.id}>
+                    <React.Fragment key={`discovered-${tile.id}`}>
                       <Rectangle 
                         bounds={[[tile.bounds.minLat, tile.bounds.minLng], [tile.bounds.maxLat, tile.bounds.maxLng]]}
                         eventHandlers={{
@@ -3198,6 +3198,7 @@ const App: React.FC = () => {
                         }}
                       />
                       <Marker 
+                        key={`marker-${tile.id}`}
                         position={[tile.bounds.maxLat, tile.bounds.minLng]} 
                         icon={L.divIcon({ 
                           className: 'bg-transparent border-none', 
@@ -3210,10 +3211,10 @@ const App: React.FC = () => {
                   );
                 })}
                 {Object.entries(activeGeoTiffOverlays).map(([id, overlay]) => (
-                  <React.Fragment key={id}>
+                  <React.Fragment key={`overlay-${id}`}>
                     {overlay.dataUrl && (
                       <ImageOverlay
-                        key={`${id}-${overlay.dataUrl.substring(0, 32)}`}
+                        key={`img-${id}-${overlay.dataUrl.substring(0, 32)}`}
                         url={overlay.dataUrl}
                         bounds={overlay.bounds}
                         opacity={geoTiffOpacities[id] ?? 0.6}
@@ -3222,6 +3223,7 @@ const App: React.FC = () => {
                       />
                     )}
                     <Rectangle 
+                      key={`rect-${id}`}
                       bounds={overlay.bounds}
                       pathOptions={{ 
                         color: '#facc15', 

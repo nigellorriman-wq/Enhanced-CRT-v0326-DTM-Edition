@@ -24,7 +24,7 @@ class LidarCatalogService {
     // Simulate API delay
     await new Promise(resolve => setTimeout(resolve, 800));
 
-    const tiles: LidarTile[] = [];
+    const tilesMap = new Map<string, LidarTile>();
     const phases = [1, 2];
     
     // We'll generate mock tiles based on the OS Grid squares (1km tiles)
@@ -41,31 +41,34 @@ class LidarCatalogService {
         // In a real app, we'd know which phase covers which area
         for (const phase of phases) {
           const coverageId = `scotland:scotland-lidar-${phase}-dtm`;
+          const id = `scot_lidar_ph${phase}_05m_${gridRef}`;
           
-          tiles.push({
-            id: `scot_lidar_ph${phase}_05m_${gridRef}`,
-            name: `LiDAR Ph${phase} 0.5m - ${gridRef}`,
-            url: `https://srsp-ows.jncc.gov.uk/ows?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=GeoTIFF&bbox=${lng.toFixed(6)},${lat.toFixed(6)},${(lng + 0.01).toFixed(6)},${(lat + 0.01).toFixed(6)}&width=1000&height=1000&crs=EPSG:4326`,
-            resolution: 0.5,
-            bounds: {
-              minLat: lat,
-              maxLat: lat + 0.01,
-              minLng: lng,
-              maxLng: lng + 0.01
-            }
-          });
+          if (!tilesMap.has(id)) {
+            tilesMap.set(id, {
+              id,
+              name: `LiDAR Ph${phase} 0.5m - ${gridRef}`,
+              url: `https://srsp-ows.jncc.gov.uk/ows?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=GeoTIFF&bbox=${lng.toFixed(6)},${lat.toFixed(6)},${(lng + 0.01).toFixed(6)},${(lat + 0.01).toFixed(6)}&width=1000&height=1000&crs=EPSG:4326`,
+              resolution: 0.5,
+              bounds: {
+                minLat: lat,
+                maxLat: lat + 0.01,
+                minLng: lng,
+                maxLng: lng + 0.01
+              }
+            });
+          }
         }
       }
     }
 
-    return tiles;
+    return Array.from(tilesMap.values());
   }
 
   private getMockGridRef(lat: number, lng: number): string {
     // Very simplified OS Grid Reference generator for mock purposes
     // Real logic would involve complex projection math
-    const latPart = Math.floor((lat - 55) * 100).toString().padStart(2, '0');
-    const lngPart = Math.floor((lng + 4) * 100).toString().padStart(2, '0');
+    const latPart = Math.round((lat - 55) * 100).toString().padStart(2, '0');
+    const lngPart = Math.round((lng + 4) * 100).toString().padStart(2, '0');
     return `NT${lngPart}${latPart}`;
   }
 }
