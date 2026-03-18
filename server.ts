@@ -239,6 +239,36 @@ async function startServer() {
     }
   });
 
+  // Proxy for GeoTIFF downloads to bypass CORS
+  app.get("/api/proxy-geotiff", async (req, res) => {
+    const { url } = req.query;
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'Missing URL' });
+    }
+
+    console.log(`[Proxy API] Fetching GeoTIFF: ${url}`);
+    try {
+      const response = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 30000,
+        headers: {
+          'Accept': 'image/tiff, */*'
+        }
+      });
+
+      console.log(`[Proxy API] Success: ${url} (Status: ${response.status})`);
+      res.set('Content-Type', response.headers['content-type'] || 'image/tiff');
+      if (response.headers['content-length']) {
+        res.set('Content-Length', response.headers['content-length']);
+      }
+      res.send(response.data);
+    } catch (error: any) {
+      console.error('[Proxy API] Error:', error.message);
+      const status = error.response?.status || 500;
+      res.status(status).json({ error: 'Failed to proxy GeoTIFF download', details: error.message });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

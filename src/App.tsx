@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { MapContainer, TileLayer, WMSTileLayer, CircleMarker, Polyline, Circle, useMap, Polygon, useMapEvents, Marker, Rectangle } from 'react-leaflet';
+import { MapContainer, TileLayer, WMSTileLayer, CircleMarker, Polyline, Circle, useMap, Polygon, useMapEvents, Marker, Rectangle, ImageOverlay, Tooltip } from 'react-leaflet';
 import L from 'leaflet';
 import { 
   ChevronLeft,
@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cpu,
+  Mountain,
   Eye,
   Diameter,
   Plus,
@@ -43,10 +44,13 @@ import {
   Settings,
   Search,
   BarChart3,
-  MousePointer2
+  MousePointer2,
+  Maximize2
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
+import { lidarGeoTiffService, OfflineGeoTiff } from './services/lidarGeoTiffService';
+import { lidarCatalogService, LidarTile } from './services/lidarCatalogService';
 
 import { WCSAnalyzer } from './components/WCSAnalyzer';
 
@@ -92,101 +96,6 @@ const SelectionHandler = ({ active, onSelectionComplete }: { active: boolean, on
 
   const bounds = L.latLngBounds(startPos, currentPos);
   return <Rectangle bounds={bounds} pathOptions={{ color: '#10b981', weight: 2, fillOpacity: 0.2, dashArray: '5, 5' }} />;
-};
-
-const LidarGrid = () => {
-  const map = useMap();
-  
-  useEffect(() => {
-    if (!map) return;
-
-    // @ts-ignore
-    const GridLayer = L.GridLayer.extend({
-      createTile: function (coords: any, done: any) {
-        const tile = L.DomUtil.create('canvas', 'leaflet-tile');
-        const size = this.getTileSize();
-        tile.width = size.x;
-        tile.height = size.y;
-        const ctx = tile.getContext('2d');
-        if (!ctx) {
-          setTimeout(() => done(null, tile), 0);
-          return tile;
-        }
-
-        const zoom = coords.z;
-        if (zoom < 17) {
-          setTimeout(() => done(null, tile), 0);
-          return tile;
-        }
-
-        // Check cache first
-        const cacheKey = `${coords.x},${coords.y},${coords.z}`;
-        if (lidarCoverageCache.has(cacheKey)) {
-          if (lidarCoverageCache.get(cacheKey)) {
-            this._drawDots(ctx, coords, size, zoom, tile);
-          }
-          setTimeout(() => done(null, tile), 0);
-          return tile;
-        }
-
-        // Fetch availability for this tile
-        const nwPoint = coords.scaleBy(size);
-        const centerPoint = nwPoint.add(L.point(size.x / 2, size.y / 2));
-        const center = map.unproject(centerPoint, zoom);
-
-        fetch(`/api/lidar?lat=${center.lat}&lng=${center.lng}`)
-          .then(res => {
-            const available = res.ok;
-            lidarCoverageCache.set(cacheKey, available);
-            if (available) {
-              this._drawDots(ctx, coords, size, zoom, tile);
-            }
-            done(null, tile);
-          })
-          .catch(() => {
-            lidarCoverageCache.set(cacheKey, false);
-            done(null, tile);
-          });
-
-        return tile;
-      },
-
-      _drawDots: function(ctx: CanvasRenderingContext2D, coords: any, size: any, zoom: number, tile: HTMLCanvasElement) {
-        const nwPoint = coords.scaleBy(size);
-        const sePoint = coords.add(L.point(1, 1)).scaleBy(size);
-        const nw = map.unproject(nwPoint, zoom);
-        const se = map.unproject(sePoint, zoom);
-
-        const latSpacing = 5 / 111319.9;
-        const lngSpacing = 5 / (111319.9 * Math.cos(nw.lat * Math.PI / 180));
-
-        const startLat = Math.floor(se.lat / latSpacing) * latSpacing;
-        const endLat = Math.ceil(nw.lat / latSpacing) * latSpacing;
-        const startLng = Math.floor(nw.lng / lngSpacing) * lngSpacing;
-        const endLng = Math.ceil(se.lng / lngSpacing) * lngSpacing;
-
-        ctx.fillStyle = '#facc15';
-
-        for (let lat = startLat; lat <= endLat; lat += latSpacing) {
-          for (let lng = startLng; lng <= endLng; lng += lngSpacing) {
-            const point = map.project([lat, lng], zoom).subtract(nwPoint);
-            if (point.x >= 0 && point.x < size.x && point.y >= 0 && point.y < size.y) {
-              ctx.fillRect(Math.round(point.x), Math.round(point.y), 1, 1);
-            }
-          }
-        }
-      }
-    });
-
-    const layer = new (GridLayer as any)({ opacity: 1.0, zIndex: 1000 });
-    layer.addTo(map);
-
-    return () => {
-      map.removeLayer(layer);
-    };
-  }, [map]);
-
-  return null;
 };
 
 /** --- TYPES --- **/
@@ -1163,7 +1072,7 @@ const UserManual: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                </div>
                <h3 className={`text-xl font-black uppercase tracking-tight ${section.color}`}>{section.title}</h3>
              </div>
-             <div className={`text-slate-400 font-semibold ${textClasses}`}>{section.content}</div>
+             <div className={`text-white font-semibold ${textClasses}`}>{section.content}</div>
           </div>
         ))}
       </div>
@@ -1212,19 +1121,19 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           className="bg-slate-800 border border-white/20 w-[46px] h-[46px] rounded-full flex items-center justify-center shadow-2xl active:scale-95 transition-all"
           title="Home"
         >
-          <Home size={20} className="text-yellow-400" />
+          <Home size={20} className="text-white" />
         </button>
         <h1 className="text-3xl tracking-tighter font-semibold text-blue-500">Sloping Greens</h1>
       </div>
       <div className="flex flex-col items-center mb-6">
-        <p className="text-slate-500 text-[9px] font-black uppercase tracking-widest text-center">Speed correction for sloping greens</p>
+        <p className="text-white text-[9px] font-black uppercase tracking-widest text-center">Speed correction for sloping greens</p>
       </div>
       <div className="flex flex-col gap-4">
         <div className="bg-slate-900/50 border border-white/5 rounded-[1.8rem] p-4">
           <h3 className="text-lg font-black text-orange-400 uppercase tracking-tight mb-4">s(down) Distance</h3>
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col items-center gap-2">
-              <span className="text-[9px] font-black text-slate-500 uppercase">Feet</span>
+              <span className="text-[9px] font-black text-white uppercase">Feet</span>
               <div className="flex items-stretch bg-slate-800/80 rounded-[1.2rem] overflow-hidden border border-white/5 w-full h-[120px]">
                 <div className="flex-1 flex items-center justify-center bg-slate-900/40"><span className="text-3xl font-black tabular-nums">{sDownFt}</span></div>
                 <div className="w-16 flex flex-col border-l border-white/5">
@@ -1234,7 +1143,7 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               </div>
             </div>
             <div className="flex flex-col items-center gap-2">
-              <span className="text-[9px] font-black text-slate-500 uppercase">Inches</span>
+              <span className="text-[9px] font-black text-white uppercase">Inches</span>
               <div className="flex items-stretch bg-slate-800/80 rounded-[1.2rem] overflow-hidden border border-white/5 w-full h-[120px]">
                 <div className="flex-1 flex items-center justify-center bg-slate-900/40"><span className="text-3xl font-black tabular-nums">{sDownIn}</span></div>
                 <div className="w-16 flex flex-col border-l border-white/5">
@@ -1249,7 +1158,7 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <h3 className="text-lg font-black text-emerald-400 uppercase tracking-tight mb-4">s(up) Distance</h3>
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col items-center gap-2">
-              <span className="text-[9px] font-black text-slate-500 uppercase">Feet</span>
+              <span className="text-[9px] font-black text-white uppercase">Feet</span>
               <div className="flex items-stretch bg-slate-800/80 rounded-[1.2rem] overflow-hidden border border-white/5 w-full h-[120px]">
                 <div className="flex-1 flex items-center justify-center bg-slate-900/40"><span className="text-3xl font-black tabular-nums">{sUpFt}</span></div>
                 <div className="w-16 flex flex-col border-l border-white/5">
@@ -1259,7 +1168,7 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               </div>
             </div>
             <div className="flex flex-col items-center gap-2">
-              <span className="text-[9px] font-black text-slate-500 uppercase">Inches</span>
+              <span className="text-[9px] font-black text-white uppercase">Inches</span>
               <div className="flex items-stretch bg-slate-800/80 rounded-[1.2rem] overflow-hidden border border-white/5 w-full h-[120px]">
                 <div className="flex-1 flex items-center justify-center bg-slate-900/40"><span className="text-3xl font-black tabular-nums">{sUpIn}</span></div>
                 <div className="w-16 flex flex-col border-l border-white/5">
@@ -1463,11 +1372,11 @@ const ReportView: React.FC<{
           <div className="flex justify-between items-end border-b border-slate-200 pb-4 mb-6">
             <div className="flex flex-col">
               <h1 className="text-2xl font-black text-blue-600 uppercase tracking-tighter">Scottish Golf</h1>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">Green Analysis Report</span>
+              <span className="text-[10px] font-bold text-white uppercase tracking-[0.3em]">Green Analysis Report</span>
             </div>
             <div className="flex flex-col items-end text-right">
               <span className="text-[10px] font-bold text-slate-600 uppercase">{fileName}</span>
-              <span className="text-[10px] font-bold text-slate-400 uppercase">{new Date().toLocaleString()}</span>
+              <span className="text-[10px] font-bold text-white uppercase">{new Date().toLocaleString()}</span>
             </div>
           </div>
 
@@ -1613,29 +1522,29 @@ const ReportView: React.FC<{
                   </div>
                 </div>
                 <div className="bg-black border border-white/10 rounded-2xl p-4">
-                  <span className="text-[9px] font-black text-yellow-400 uppercase tracking-widest block mb-2">EGD Analysis</span>
+                  <span className="text-[9px] font-black text-white uppercase tracking-widest block mb-2">EGD Analysis</span>
                   <div className="flex flex-col mb-2">
                     {(() => {
                       const s = analysis?.shape as any;
                       if (s?.isLShape && !s?.isAnomalous) {
                         return (
                           <>
-                            <div className="text-2xl font-black text-yellow-400 leading-none">
+                            <div className="text-2xl font-black text-white leading-none">
                               {s.s1?.egd.toFixed(1)} / {s.s2?.egd.toFixed(1)} <span className="text-xs opacity-40">YD</span>
                             </div>
-                            <div className="text-lg font-bold text-yellow-400/60 leading-none mt-1">
+                            <div className="text-lg font-bold text-white/60 leading-none mt-1">
                               {(s.s1?.egd / 1.09361).toFixed(1)} / {(s.s2?.egd / 1.09361).toFixed(1)} <span className="text-xs opacity-40">M</span>
                             </div>
                           </>
                         );
                       }
-                      if (s?.isAnomalous) return <div className="text-3xl font-black text-yellow-400">---</div>;
+                      if (s?.isAnomalous) return <div className="text-3xl font-black text-white">---</div>;
                       return (
                         <>
-                          <div className="text-3xl font-black text-yellow-400 leading-none">
+                          <div className="text-3xl font-black text-white leading-none">
                             {s?.egd.toFixed(1)} <span className="text-xs opacity-40">YD</span>
                           </div>
-                          <div className="text-xl font-bold text-yellow-400/60 leading-none mt-1">
+                          <div className="text-xl font-bold text-white/60 leading-none mt-1">
                             {(s?.egd / 1.09361).toFixed(1)} <span className="text-xs opacity-40">M</span>
                           </div>
                         </>
@@ -1661,7 +1570,7 @@ const ReportView: React.FC<{
                               <span className="text-white">{(s.anomalousResult.widths[0]?.w).toFixed(1)}y / {(s.anomalousResult.widths[0]?.w / 1.09361).toFixed(1)}m</span>
                             </div>
                             <div className="flex justify-between text-[9px] font-bold uppercase">
-                              <span className="text-yellow-400">W2:</span>
+                              <span className="text-white">W2:</span>
                               <span className="text-white">{(s.anomalousResult.widths[1]?.w).toFixed(1)}y / {(s.anomalousResult.widths[1]?.w / 1.09361).toFixed(1)}m</span>
                             </div>
                           </>
@@ -1687,7 +1596,7 @@ const ReportView: React.FC<{
                               <span className="text-white">{s.L.toFixed(1)}y / {(s.L / 1.09361).toFixed(1)}m</span>
                             </div>
                             <div className="flex justify-between text-[9px] font-bold uppercase">
-                              <span className="text-yellow-400">Width:</span>
+                              <span className="text-white">Width:</span>
                               <span className="text-white">{s.W.toFixed(1)}y / {(s.W / 1.09361).toFixed(1)}m</span>
                             </div>
                             <div className="flex justify-between text-[9px] font-bold uppercase">
@@ -1706,7 +1615,7 @@ const ReportView: React.FC<{
 
           <div className="mt-auto pt-4 border-t border-slate-200 flex justify-between items-center">
             <span className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">Scottish Golf Course Rating Toolkit v03.26</span>
-            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+            <span className="text-[9px] font-bold text-white uppercase tracking-widest">
               {isSummaryPage ? 'Report Summary' : `Page ${currentIndex + 1} of ${greens.length + 1}`}
             </span>
           </div>
@@ -1743,13 +1652,114 @@ const TerrainManager: React.FC<{
   currentOffline: OfflineLidarData | null,
   onLoad: (data: OfflineLidarData) => void,
   onDrawMode: () => void,
-  selectionBounds: L.LatLngBounds | null
-}> = ({ map, onClose, onDownload, currentOffline, onLoad, onDrawMode, selectionBounds }) => {
+  selectionBounds: L.LatLngBounds | null,
+  offlineGeoTiffs: OfflineGeoTiff[],
+  onGeoTiffDownload: (tiff: OfflineGeoTiff) => void,
+  onGeoTiffDelete: (id: string) => void,
+  activeOverlays: Record<string, any>,
+  onToggleOverlay: (id: string) => void,
+  lidarGridOpacity: number,
+  onLidarGridOpacityChange: (opacity: number) => void,
+  geoTiffOpacities: Record<string, number>,
+  onGeoTiffOpacityChange: (id: string, opacity: number) => void,
+  isOverlayLoading: Record<string, boolean>,
+  onZoomTo: (id: string) => void,
+  discoveredTiles: LidarTile[],
+  onDiscoveredTilesChange: (tiles: LidarTile[]) => void,
+  selectedTileIds: Set<string>,
+  onToggleTileSelection: (id: string) => void,
+  onClearSelection: () => void
+}> = ({ 
+  map, onClose, onDownload, currentOffline, onLoad, onDrawMode, selectionBounds, 
+  offlineGeoTiffs, onGeoTiffDownload, onGeoTiffDelete, activeOverlays, 
+  onToggleOverlay, lidarGridOpacity, onLidarGridOpacityChange, geoTiffOpacities, 
+  onGeoTiffOpacityChange, isOverlayLoading, onZoomTo,
+  discoveredTiles, onDiscoveredTilesChange, selectedTileIds, onToggleTileSelection,
+  onClearSelection
+}) => {
   const [courseName, setCourseName] = useState(currentOffline?.courseName || '');
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [pointsLoaded, setPointsLoaded] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'geotiff' | 'legacy'>('geotiff');
+
+  const handleSearchTiles = async () => {
+    if (!map) return;
+    setIsSearching(true);
+    setError(null);
+    try {
+      const bounds = selectionBounds || map.getBounds();
+      const searchBounds = {
+        minLat: bounds.getSouth(),
+        maxLat: bounds.getNorth(),
+        minLng: bounds.getWest(),
+        maxLng: bounds.getEast()
+      };
+      const tiles = await lidarCatalogService.findTiles(searchBounds);
+      onDiscoveredTilesChange(tiles);
+      if (tiles.length > 0) {
+        onClearSelection();
+      }
+    } catch (err) {
+      setError('Failed to discover tiles');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleDownloadTile = async (tile: LidarTile) => {
+    setIsDownloading(true);
+    setError(null);
+    try {
+      await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
+      const all = await lidarGeoTiffService.loadAll();
+      const downloaded = all.find(t => t.id === tile.url);
+      if (downloaded) onGeoTiffDownload(downloaded);
+    } catch (err: any) {
+      setError(err.message || `Failed to download ${tile.name}`);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleDownloadSelected = async () => {
+    const selectedTiles = discoveredTiles.filter(t => selectedTileIds.has(t.id));
+    if (selectedTiles.length === 0) return;
+
+    setIsDownloading(true);
+    setError(null);
+    let successCount = 0;
+    
+    try {
+      for (let i = 0; i < selectedTiles.length; i++) {
+        const tile = selectedTiles[i];
+        setProgress(Math.round(((i + 1) / selectedTiles.length) * 100));
+        try {
+          await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
+          successCount++;
+        } catch (e) {
+          console.error(`Failed to download ${tile.name}`, e);
+        }
+      }
+      
+      const all = await lidarGeoTiffService.loadAll();
+      all.forEach(tiff => {
+        if (selectedTiles.some(st => st.url === tiff.id)) {
+          onGeoTiffDownload(tiff);
+        }
+      });
+      
+      if (successCount < selectedTiles.length) {
+        setError(`Downloaded ${successCount} of ${selectedTiles.length} tiles. Some failed.`);
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to download selected tiles");
+    } finally {
+      setIsDownloading(false);
+      setProgress(0);
+    }
+  };
 
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -1757,12 +1767,20 @@ const TerrainManager: React.FC<{
 
     Array.from(files).forEach(file => {
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         try {
           const buffer = event.target?.result as ArrayBuffer;
-          const view = new DataView(buffer);
           
-          // Check for binary magic "SGLD"
+          if (file.name.toLowerCase().endsWith('.tif') || file.name.toLowerCase().endsWith('.tiff')) {
+            const blob = new Blob([buffer]);
+            await lidarGeoTiffService.downloadAndStore(URL.createObjectURL(blob), file.name);
+            const all = await lidarGeoTiffService.loadAll();
+            const imported = all.find(t => t.name === file.name);
+            if (imported) onGeoTiffDownload(imported);
+            return;
+          }
+
+          const view = new DataView(buffer);
           const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
           
           if (magic === 'SGLD') {
@@ -1784,21 +1802,11 @@ const TerrainManager: React.FC<{
             const padding = (4 - (offset % 4)) % 4;
             offset += padding;
             
-            // Instead of loading the whole grid, we store the blob and the offset
             onLoad({ 
               courseName, minLat, maxLat, minLng, maxLng, resolution, rows, cols, 
               blob: file, 
               headerOffset: offset 
             });
-          } else {
-            // Fallback to JSON
-            const text = new TextDecoder().decode(buffer);
-            const data = JSON.parse(text) as OfflineLidarData;
-            if (data.grid && data.minLat && data.maxLat) {
-              onLoad(data);
-            } else {
-              setError('Invalid .sgld file format');
-            }
           }
         } catch (err) {
           setError('Failed to parse terrain file');
@@ -1806,200 +1814,247 @@ const TerrainManager: React.FC<{
       };
       reader.readAsArrayBuffer(file);
     });
-    // Close after processing all files (or at least starting them)
-    // In a real app we might want to wait for all to finish, but this is fine for now
     setTimeout(onClose, 500);
   };
 
-  /*
-  const startDownload = async () => {
-    if (!map || !courseName) return;
-    setIsDownloading(true);
-    setPointsLoaded(0);
-    setError(null);
-    
-    const bounds = selectionBounds || map.getBounds();
-    const sw = bounds.getSouthWest();
-    const ne = bounds.getNorthEast();
-    
-    const resolution = 1; // 1m grid
-    const latStep = (resolution / 111320);
-    const lngStep = (resolution / (111320 * Math.cos(sw.lat * Math.PI / 180)));
-    
-    const totalRows = Math.ceil((ne.lat - sw.lat) / latStep);
-    const totalCols = Math.ceil((ne.lng - sw.lng) / lngStep);
-    const totalPoints = totalRows * totalCols;
-    
-    // Chunking logic: split into 10x10 chunks (exactly 100 points each) for granular progress feedback
-    const CHUNK_SIZE = 10;
-    const numRowChunks = Math.ceil(totalRows / CHUNK_SIZE);
-    const numColChunks = Math.ceil(totalCols / CHUNK_SIZE);
-    const totalChunks = numRowChunks * numColChunks;
-
-    console.log(`[TerrainManager] Starting download: ${totalPoints} points in ${totalChunks} chunks`);
-
-    for (let rChunk = 0; rChunk < numRowChunks; rChunk++) {
-      for (let cChunk = 0; cChunk < numColChunks; cChunk++) {
-        const startRow = rChunk * CHUNK_SIZE;
-        const endRow = Math.min(startRow + CHUNK_SIZE, totalRows);
-        const startCol = cChunk * CHUNK_SIZE;
-        const endCol = Math.min(startCol + CHUNK_SIZE, totalCols);
-        
-        const chunkRows = endRow - startRow;
-        const chunkCols = endCol - startCol;
-        
-        const chunkSwLat = ne.lat - (endRow * latStep);
-        const chunkNeLat = ne.lat - (startRow * latStep);
-        const chunkSwLng = sw.lng + (startCol * lngStep);
-        const chunkNeLng = sw.lng + (endCol * lngStep);
-
-        try {
-          const url = `/api/lidar-bulk?swLat=${chunkSwLat}&swLng=${chunkSwLng}&neLat=${chunkNeLat}&neLng=${chunkNeLng}&resolution=${resolution}&rows=${chunkRows}&cols=${chunkCols}`;
-          const res = await fetch(url);
-          
-          if (!res.ok) {
-            const errorText = await res.text();
-            throw new Error(`Server error (${res.status}): ${errorText.substring(0, 100)}`);
-          }
-          
-          const contentType = res.headers.get('Content-Type');
-          if (contentType && contentType.includes('application/json')) {
-            const errorJson = await res.json();
-            throw new Error(`API Error: ${errorJson.error || 'Unknown error'}`);
-          }
-          
-          const buffer = await res.arrayBuffer();
-          
-          // CRITICAL: Fix for "byte length should be a multiple of 4"
-          if (buffer.byteLength % 4 !== 0) {
-            throw new Error(`Invalid binary data received: byte length ${buffer.byteLength} is not a multiple of 4`);
-          }
-          
-          const grid = new Float32Array(buffer);
-          
-          // Create binary blob for this chunk
-          const encoder = new TextEncoder();
-          const chunkName = `${courseName}_part_${rChunk + 1}_${cChunk + 1}`;
-          const nameBytes = encoder.encode(chunkName);
-          const headerSize = 4 + 1 + 1 + nameBytes.length + 32 + 4 + 8;
-          const padding = (4 - (headerSize % 4)) % 4;
-          const fileBuffer = new ArrayBuffer(headerSize + padding + grid.byteLength);
-          const view = new DataView(fileBuffer);
-          
-          view.setUint8(0, 'S'.charCodeAt(0));
-          view.setUint8(1, 'G'.charCodeAt(0));
-          view.setUint8(2, 'L'.charCodeAt(0));
-          view.setUint8(3, 'D'.charCodeAt(0));
-          view.setUint8(4, 2);
-          view.setUint8(5, nameBytes.length);
-          let offset = 6;
-          new Uint8Array(fileBuffer, offset, nameBytes.length).set(nameBytes);
-          offset += nameBytes.length;
-          
-          view.setFloat64(offset, chunkSwLat); offset += 8;
-          view.setFloat64(offset, chunkNeLat); offset += 8;
-          view.setFloat64(offset, chunkSwLng); offset += 8;
-          view.setFloat64(offset, chunkNeLng); offset += 8;
-          view.setFloat32(offset, resolution); offset += 4;
-          view.setInt32(offset, chunkRows); offset += 4;
-          view.setInt32(offset, chunkCols); offset += 4;
-          
-          offset += padding;
-          // Use grid.length to avoid "offset is out of bounds" if there's a slight mismatch
-          new Float32Array(fileBuffer, offset, grid.length).set(grid);
-          
-          const blob = new Blob([fileBuffer], { type: 'application/octet-stream' });
-          const downloadUrl = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = downloadUrl;
-          a.download = `${chunkName.replace(/\s+/g, '_')}.sgld`;
-          // Only auto-download if the number of chunks is reasonable to avoid browser flooding
-          if (totalChunks <= 100) {
-            a.click();
-          }
-          
-          // If it's the first chunk, we load it into the app
-          if (rChunk === 0 && cChunk === 0) {
-            onDownload({
-              courseName: chunkName,
-              minLat: chunkSwLat, maxLat: chunkNeLat,
-              minLng: chunkSwLng, maxLng: chunkNeLng,
-              resolution, rows: chunkRows, cols: chunkCols,
-              blob, headerOffset: offset
-            });
-          }
-        } catch (e: any) {
-          console.error(`[TerrainManager] Error downloading chunk:`, e);
-          setError(`Error downloading part ${rChunk * numColChunks + cChunk + 1}/${totalChunks}: ${e.message}`);
-          setIsDownloading(false);
-          return;
-        }
-        
-        setPointsLoaded(prev => prev + 100);
-        setProgress(Math.round(((rChunk * numColChunks + cChunk + 1) / totalChunks) * 100));
-      }
-    }
-    
-    setIsDownloading(false);
-    if (!error) onClose();
-  };
-  */
-
   return (
-    <div className="fixed inset-0 z-[3000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
-      <div className="bg-slate-900 border border-white/10 w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 duration-300">
+    <div className="fixed inset-y-0 right-0 z-[3000] bg-slate-900/95 backdrop-blur-md border-l border-white/10 w-full max-w-md shadow-2xl flex flex-col">
+      <div className="flex-1 p-8 flex flex-col overflow-hidden">
         <div className="flex justify-between items-center mb-6">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-amber-600 rounded-full flex items-center justify-center shadow-lg shadow-amber-600/20">
-              <Cpu size={20} className="text-white" />
+            <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center shadow-lg shadow-blue-600/20">
+              <Mountain size={24} className="text-white" />
             </div>
-            <h2 className="text-xl font-bold text-white">Terrain Manager</h2>
+            <div>
+              <h2 className="text-xl font-bold text-white">Terrain Manager</h2>
+              <p className="text-yellow-400 text-[10px] uppercase tracking-widest font-bold">Offline LiDAR Data</p>
+            </div>
           </div>
-          <button onClick={onClose} className="p-2 bg-slate-800 rounded-full text-slate-400 active:scale-90"><X size={20} /></button>
+          <button onClick={onClose} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90">
+            <X size={20} />
+          </button>
         </div>
 
-        {currentOffline ? (
-          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4 mb-6 flex items-center gap-4">
-            <CheckCircle2 className="text-emerald-500" size={24} />
-            <div>
-              <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Active Offline Map</p>
-              <p className="text-sm font-bold text-white">{currentOffline.courseName}</p>
-              <p className="text-[9px] text-emerald-400/60 uppercase mt-0.5">{currentOffline.rows * currentOffline.cols} points • {currentOffline.resolution}m grid</p>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-blue-500/5 border border-blue-500/10 rounded-2xl p-4 mb-6 flex items-center gap-4">
-            <Info className="text-blue-400" size={24} />
-            <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest leading-relaxed">No offline terrain loaded. Download the current map area or import a .sgld file.</p>
-          </div>
-        )}
+        <div className="flex bg-slate-950 p-1 rounded-2xl mb-6 border border-white/5">
+          <button 
+            onClick={() => setActiveTab('geotiff')}
+            className={`flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all ${activeTab === 'geotiff' ? 'bg-blue-600 text-white' : 'text-white'}`}
+          >
+            GeoTIFF Tiles
+          </button>
+          <button 
+            onClick={() => setActiveTab('legacy')}
+            className={`flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all ${activeTab === 'legacy' ? 'bg-blue-600 text-white' : 'text-white'}`}
+          >
+            Legacy SGLD
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto no-scrollbar space-y-6">
+          {activeTab === 'geotiff' ? (
+            <>
+              <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xs font-bold text-white uppercase tracking-widest">Tile Discovery</h3>
+                  <button 
+                    onClick={onDrawMode}
+                    className="text-[9px] font-bold text-blue-400 uppercase tracking-widest hover:underline"
+                  >
+                    {selectionBounds ? 'Area Selected' : 'Select Area on Map'}
+                  </button>
+                </div>
+
+                <div className="mb-4 bg-slate-900/50 p-3 rounded-xl border border-white/5">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-[8px] font-bold text-yellow-400 uppercase tracking-widest">Online LiDAR Opacity</span>
+                    <span className="text-[8px] font-bold text-blue-400">{Math.round(lidarGridOpacity * 100)}%</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="1" 
+                    step="0.01" 
+                    value={lidarGridOpacity} 
+                    onChange={(e) => onLidarGridOpacityChange(parseFloat(e.target.value))}
+                    className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                  />
+                </div>
+                
+                <button 
+                  onClick={handleSearchTiles}
+                  disabled={isSearching}
+                  className="w-full bg-blue-600 text-white font-bold py-3 rounded-2xl shadow-lg shadow-blue-600/20 active:scale-95 transition-all uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 mb-4"
+                >
+                  {isSearching ? <RotateCcw className="animate-spin" size={14} /> : <Search size={14} />}
+                  {isSearching ? 'Searching Catalog...' : 'Find Tiles for Selected Area'}
+                </button>
+
+                {discoveredTiles.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-xl border border-white/5">
+                      <div>
+                        <p className="text-[10px] font-bold text-white uppercase tracking-widest">{discoveredTiles.length} Tiles Found</p>
+                        <p className="text-[8px] text-yellow-400 uppercase tracking-widest">{selectedTileIds.size} Selected</p>
+                      </div>
+                      <button 
+                        onClick={handleDownloadSelected}
+                        disabled={isDownloading || selectedTileIds.size === 0}
+                        className="bg-blue-600 text-white px-4 py-2 rounded-lg text-[9px] font-bold uppercase tracking-widest active:scale-95 disabled:opacity-30 transition-all flex items-center gap-2"
+                      >
+                        {isDownloading ? <RotateCcw size={12} className="animate-spin" /> : <Download size={12} />}
+                        Download Selected
+                      </button>
+                    </div>
+
+                    {isDownloading && progress > 0 && (
+                      <div className="bg-slate-900 rounded-full h-1.5 overflow-hidden border border-white/5">
+                        <div 
+                          className="bg-blue-500 h-full transition-all duration-300" 
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-2 no-scrollbar">
+                      {discoveredTiles.map(tile => {
+                        const isDownloaded = offlineGeoTiffs.some(t => t.id === tile.url);
+                        const isSelected = selectedTileIds.has(tile.id);
+                        return (
+                          <div 
+                            key={tile.id} 
+                            onClick={() => !isDownloaded && onToggleTileSelection(tile.id)}
+                            className={`flex justify-between items-center p-3 rounded-xl border transition-all cursor-pointer ${isDownloaded ? 'bg-emerald-600/5 border-emerald-500/20' : (isSelected ? 'bg-blue-600/10 border-blue-500/50' : 'bg-slate-900 border-white/5 hover:border-white/10')}`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className={`w-2 h-2 rounded-full ${isDownloaded ? 'bg-emerald-500' : (isSelected ? 'bg-blue-500' : 'bg-slate-700')}`} />
+                              <div>
+                                <p className="text-[10px] font-bold text-white">{tile.name}</p>
+                                <p className="text-[8px] text-yellow-400 uppercase tracking-widest">{tile.resolution}m Resolution</p>
+                              </div>
+                            </div>
+                            {isDownloaded ? (
+                              <span className="text-[8px] font-bold text-emerald-400 uppercase tracking-widest">Stored</span>
+                            ) : (
+                              <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-blue-600 border-blue-500' : 'border-white/10'}`}>
+                                {isSelected && <CheckCircle2 size={12} className="text-white" />}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
+                <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-4">Stored GeoTIFFs ({offlineGeoTiffs.length})</h3>
+                {offlineGeoTiffs.length === 0 ? (
+                  <p className="text-yellow-400 text-[10px] text-center py-4 italic">No GeoTIFFs stored for offline use.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {offlineGeoTiffs.map(tiff => (
+                        <div key={tiff.id} className="bg-slate-900 border border-white/5 p-3 rounded-xl space-y-3">
+                          <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center">
+                                <FileText size={14} className="text-blue-400" />
+                              </div>
+                              <div>
+                                <p className="text-[10px] font-bold text-white">{tiff.name}</p>
+                                <p className="text-[8px] text-yellow-400 uppercase tracking-widest">{(tiff.blob.size / (1024 * 1024)).toFixed(1)} MB • {tiff.resolution}m</p>
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <button 
+                                onClick={() => onZoomTo(tiff.id)}
+                                className="w-8 h-8 bg-slate-800 text-white rounded-lg flex items-center justify-center active:scale-90"
+                                title="Zoom to Tile"
+                              >
+                                <Maximize2 size={14} />
+                              </button>
+                              <button 
+                                onClick={() => onToggleOverlay(tiff.id)}
+                                disabled={isOverlayLoading[tiff.id]}
+                                className={`w-8 h-8 rounded-lg flex items-center justify-center active:scale-90 transition-colors ${activeOverlays[tiff.id] ? 'bg-emerald-600/20 text-emerald-400' : 'bg-slate-800 text-white'}`}
+                                title="Toggle Map Overlay"
+                              >
+                                {isOverlayLoading[tiff.id] ? <RotateCcw size={14} className="animate-spin" /> : <Layers size={14} />}
+                              </button>
+                              <button 
+                                onClick={() => onGeoTiffDelete(tiff.id)}
+                                className="w-8 h-8 bg-rose-600/20 text-rose-400 rounded-lg flex items-center justify-center active:scale-90"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+
+                          {activeOverlays[tiff.id] && (
+                            <div className="bg-slate-950/50 p-2 rounded-lg border border-white/5">
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-[7px] font-bold text-yellow-400 uppercase tracking-widest">Overlay Opacity</span>
+                                <span className="text-[7px] font-bold text-emerald-400">{Math.round((geoTiffOpacities[tiff.id] ?? 0.6) * 100)}%</span>
+                              </div>
+                              <input 
+                                type="range" 
+                                min="0" 
+                                max="1" 
+                                step="0.01" 
+                                value={geoTiffOpacities[tiff.id] ?? 0.6} 
+                                onChange={(e) => onGeoTiffOpacityChange(tiff.id, parseFloat(e.target.value))}
+                                className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+                              />
+                            </div>
+                          )}
+                        </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
+                <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-4">Import Legacy Data</h3>
+                <label className="w-full bg-slate-900 border-2 border-dashed border-white/10 rounded-2xl py-8 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-blue-500/50 transition-colors">
+                  <Upload size={24} className="text-white" />
+                  <span className="text-[10px] font-bold text-yellow-400 uppercase tracking-widest">Drop .sgld or .tif files here</span>
+                  <input type="file" multiple accept=".sgld,.tif,.tiff" onChange={handleFileImport} className="hidden" />
+                </label>
+              </div>
+
+              {currentOffline && (
+                <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
+                  <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-4">Active Legacy Chunk</h3>
+                  <div className="bg-slate-900 border border-white/5 p-4 rounded-2xl">
+                    <p className="text-sm font-bold text-white mb-1">{currentOffline.courseName}</p>
+                    <p className="text-[9px] text-yellow-400 uppercase tracking-widest mb-4">{currentOffline.rows}x{currentOffline.cols} Grid • {currentOffline.resolution}m Res</p>
+                    <div className="flex gap-2">
+                      <div className="flex-1 bg-emerald-600/20 text-emerald-400 py-2 rounded-xl text-[9px] font-bold uppercase tracking-widest text-center">Active</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
 
         {error && (
-          <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-4 mb-6 flex items-center gap-3">
-            <AlertCircle className="text-rose-500" size={18} />
-            <p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">{error}</p>
+          <div className="mt-6 bg-rose-600/20 border border-rose-600/20 p-4 rounded-2xl flex items-center gap-3">
+            <AlertCircle size={18} className="text-rose-400" />
+            <p className="text-[10px] font-bold text-rose-400 uppercase tracking-widest">{error}</p>
           </div>
         )}
 
-        <div className="space-y-4">
-          <div className="flex flex-col gap-2">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2">Course/Project Name</label>
-            <input 
-              type="text"
-              value={courseName}
-              onChange={(e) => setCourseName(e.target.value)}
-              placeholder="e.g. St Andrews Old Course"
-              className="w-full bg-slate-950 border border-white/10 rounded-2xl py-4 px-6 text-white focus:outline-none focus:border-amber-500 transition-all text-sm font-bold"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 gap-3">
-            <label className="flex items-center justify-center gap-2 py-4 bg-slate-800 border border-white/5 text-slate-400 font-bold rounded-2xl text-[10px] uppercase tracking-widest cursor-pointer active:scale-95 transition-all">
-              <Upload size={16} />
-              Import .sgld
-              <input type="file" accept=".sgld" multiple onChange={handleFileImport} className="hidden" />
-            </label>
-          </div>
+        <div className="mt-8 pt-6 border-t border-white/5 flex justify-between items-center">
+          <p className="text-[8px] text-yellow-400 font-bold uppercase tracking-widest">GeoTIFF Strategy v1.0</p>
+          <button 
+            onClick={onClose}
+            className="bg-slate-800 text-white px-6 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest active:scale-95 transition-all"
+          >
+            Close
+          </button>
         </div>
       </div>
     </div>
@@ -2042,17 +2097,20 @@ const App: React.FC = () => {
   const [mapCenter, setMapCenter] = useState<GeoPoint | null>(null);
   const [currentZoom, setCurrentZoom] = useState(2);
   const tilesLoadedCount = React.useRef(0);
-  const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available'>('idle');
+  const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available' | 'offline' | 'geotiff'>('idle');
+  const [lidarGridOpacity, setLidarGridOpacity] = useState(1.0);
+  const [geoTiffOpacities, setGeoTiffOpacities] = useState<Record<string, number>>({});
+  const [isOverlayLoading, setIsOverlayLoading] = useState<Record<string, boolean>>({});
   const [isPlanningSession, setIsPlanningSession] = useState(false);
 
   React.useEffect(() => {
     if (mapStyle === 'LiDAR DTM') {
       tilesLoadedCount.current = 0;
-      setLidarStatus('loading');
-    } else {
+      setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'loading');
+    } else if (!isPlanningSession) {
       setLidarStatus('idle');
     }
-  }, [mapStyle]);
+  }, [mapStyle, isPlanningSession]);
   const [lidarDebug, setLidarDebug] = useState<{ url: string, response: any, coords: { lat: number, lng: number } | null }>({ url: '', response: null, coords: null });
   const [showLidarDebug, setShowLidarDebug] = useState(false);
   const [lidarLayerLoading, setLidarLayerLoading] = useState(false);
@@ -2061,20 +2119,29 @@ const App: React.FC = () => {
   const [planningReportTracks, setPlanningReportTracks] = useState<SavedRecord[]>([]);
   const [planningReportFileName, setPlanningReportFileName] = useState("");
   const [offlineLidarChunks, setOfflineLidarChunks] = useState<OfflineLidarData[]>([]);
+  const [offlineGeoTiffs, setOfflineGeoTiffs] = useState<OfflineGeoTiff[]>([]);
+  const [activeGeoTiffOverlays, setActiveGeoTiffOverlays] = useState<Record<string, { dataUrl: string; bounds: [[number, number], [number, number]] }>>({});
   const [showTerrainManager, setShowTerrainManager] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectionBounds, setSelectionBounds] = useState<L.LatLngBounds | null>(null);
+  const [discoveredTiles, setDiscoveredTiles] = useState<LidarTile[]>([]);
+  const [selectedTileIds, setSelectedTileIds] = useState<Set<string>>(new Set());
   const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
   const CONCAVITY_FIXED = 0.82;
   const greenStartRef = useRef<GeoPoint | null>(null);
   const lidarFetchRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!isFollowing && mapCenter) {
+    if ((!isFollowing || isPlanningSession) && mapCenter) {
+      // Update status immediately if we are in a downloaded area
+      if (lidarGeoTiffService.isAreaDownloaded(mapCenter.lat, mapCenter.lng)) {
+        setLidarStatus('geotiff');
+      }
+
       const timer = setTimeout(async () => {
         const alt = await fetchLidarElevation(mapCenter.lat, mapCenter.lng);
         setPos(prev => {
-          if (isFollowing) return prev;
+          if (isFollowing && !isPlanningSession) return prev;
           // Only update if moved more than 0.2m to avoid jitter
           if (prev && L.latLng(prev.lat, prev.lng).distanceTo(L.latLng(mapCenter.lat, mapCenter.lng)) < 0.2 && prev.alt === alt) return prev;
           return {
@@ -2090,10 +2157,28 @@ const App: React.FC = () => {
       }, 250);
       return () => clearTimeout(timer);
     }
-  }, [mapCenter, isFollowing]);
+  }, [mapCenter, isFollowing, isPlanningSession]);
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
-    // Check offline data first
+    // Check if area is downloaded to set status immediately
+    const isDownloaded = lidarGeoTiffService.isAreaDownloaded(lat, lng);
+    if (isDownloaded) {
+      setLidarStatus('geotiff');
+    }
+
+    // 1. Check Offline GeoTIFFs first (highest priority)
+    try {
+      const offlineElev = await lidarGeoTiffService.getElevation(lat, lng);
+      if (offlineElev !== null) {
+        console.log(`[LiDAR] Using OFFLINE GeoTIFF data for ${lat.toFixed(6)}, ${lng.toFixed(6)}: ${offlineElev.toFixed(2)}m`);
+        setLidarStatus('geotiff');
+        return offlineElev;
+      }
+    } catch (e) {
+      console.error('[LiDAR] Failed to query offline GeoTIFF', e);
+    }
+
+    // 2. Check Offline Binary Chunks (.sgld)
     for (const chunk of offlineLidarChunks) {
       if (lat >= chunk.minLat && lat <= chunk.maxLat && lng >= chunk.minLng && lng <= chunk.maxLng) {
         const row = Math.floor(((chunk.maxLat - lat) / (chunk.maxLat - chunk.minLat)) * (chunk.rows - 1));
@@ -2104,7 +2189,8 @@ const App: React.FC = () => {
         if (chunk.grid) {
           const val = chunk.grid[index];
           if (val !== null && val !== undefined && !isNaN(val as number)) {
-            setLidarStatus('available');
+            console.log(`[LiDAR] Using OFFLINE Binary Chunk for ${lat}, ${lng}: ${val}m`);
+            setLidarStatus(prev => prev === 'geotiff' ? prev : 'offline');
             return val as number;
           }
         } 
@@ -2116,11 +2202,12 @@ const App: React.FC = () => {
             const buffer = await slice.arrayBuffer();
             const val = new Float32Array(buffer)[0];
             if (!isNaN(val)) {
-              setLidarStatus('available');
+              console.log(`[LiDAR] Using OFFLINE Binary Blob for ${lat}, ${lng}: ${val}m`);
+              setLidarStatus(prev => prev === 'geotiff' ? prev : 'offline');
               return val;
             }
           } catch (e) {
-            console.error('Failed to read elevation from blob', e);
+            console.error('[LiDAR] Failed to read elevation from blob', e);
           }
         }
       }
@@ -2128,10 +2215,11 @@ const App: React.FC = () => {
 
     const fetchId = Date.now();
     lidarFetchRef.current = fetchId;
-    setLidarStatus('loading');
+    setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'loading');
     setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: '/api/lidar' }));
     
     try {
+      console.log(`[LiDAR] Querying ONLINE API for ${lat}, ${lng}...`);
       const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`);
       
       if (lidarFetchRef.current !== fetchId) return null;
@@ -2148,7 +2236,7 @@ const App: React.FC = () => {
         if (data && data.elevation !== undefined) {
           const val = parseFloat(String(data.elevation).trim());
           if (!isNaN(val)) {
-            setLidarStatus('available');
+            setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'available');
             return val;
           }
         }
@@ -2158,7 +2246,7 @@ const App: React.FC = () => {
           const res = data.results[0];
           const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
           if (!isNaN(val)) {
-            setLidarStatus('available');
+            setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'available');
             return val;
           }
         }
@@ -2170,11 +2258,11 @@ const App: React.FC = () => {
         throw new Error("Expected JSON response but received something else.");
       }
       
-      setLidarStatus('error');
+      setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'error');
       return null;
     } catch (error: any) {
       if (lidarFetchRef.current === fetchId) {
-        setLidarStatus('error');
+        setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'error');
         setLidarDebug(prev => ({ ...prev, response: `PROXY ERROR: ${error.message}` }));
       }
       return null;
@@ -2184,10 +2272,110 @@ const App: React.FC = () => {
   const viewRef = useRef<AppView>(view);
   useEffect(() => { viewRef.current = view; }, [view]);
 
+  // Automatically activate GeoTIFF overlays in LiDAR DTM mode
+  const loadingOverlays = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (mapStyle === 'LiDAR DTM' && offlineGeoTiffs.length > 0) {
+      offlineGeoTiffs.forEach(async (tiff) => {
+        if (!activeGeoTiffOverlays[tiff.id] && !loadingOverlays.current.has(tiff.id)) {
+          loadingOverlays.current.add(tiff.id);
+          try {
+            const overlay = await lidarGeoTiffService.generateOverlay(tiff.id);
+            if (overlay) {
+              setActiveGeoTiffOverlays(prev => ({
+                ...prev,
+                [tiff.id]: overlay
+              }));
+            }
+          } finally {
+            loadingOverlays.current.delete(tiff.id);
+          }
+        }
+      });
+    }
+  }, [mapStyle, offlineGeoTiffs, activeGeoTiffOverlays]);
+
+  const handleToggleTileSelection = (tileId: string) => {
+    setSelectedTileIds(prev => {
+      const next = new Set(prev);
+      if (next.has(tileId)) next.delete(tileId);
+      else next.add(tileId);
+      return next;
+    });
+  };
+
+  const handleToggleGeoTiffOverlay = async (id: string) => {
+    if (activeGeoTiffOverlays[id]) {
+      setActiveGeoTiffOverlays(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    } else {
+      setIsOverlayLoading(prev => ({ ...prev, [id]: true }));
+      try {
+        const overlay = await lidarGeoTiffService.generateOverlay(id);
+        if (overlay) {
+          // Disable following so the map doesn't snap back
+          setIsFollowing(false);
+          
+          setActiveGeoTiffOverlays(prev => ({
+            ...prev,
+            [id]: overlay
+          }));
+          
+          // Automatically zoom to the first time it's activated
+          if (mapInstance) {
+            mapInstance.fitBounds(overlay.bounds, { padding: [50, 50] });
+          }
+        } else {
+          // If overlay generation failed (e.g. no data), we can still show the border if we have bounds
+          const tiff = offlineGeoTiffs.find(t => t.id === id);
+          if (tiff) {
+            setIsFollowing(false);
+            const bounds: [[number, number], [number, number]] = [
+              [tiff.bounds.minLat, tiff.bounds.minLng],
+              [tiff.bounds.maxLat, tiff.bounds.maxLng]
+            ];
+            setActiveGeoTiffOverlays(prev => ({
+              ...prev,
+              [id]: { dataUrl: '', bounds }
+            }));
+            if (mapInstance) {
+              mapInstance.fitBounds(bounds, { padding: [50, 50] });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to generate overlay', err);
+      } finally {
+        setIsOverlayLoading(prev => ({ ...prev, [id]: false }));
+      }
+    }
+  };
+
+  const handleZoomToGeoTiff = (id: string) => {
+    const overlay = activeGeoTiffOverlays[id];
+    if (overlay && mapInstance) {
+      mapInstance.fitBounds(overlay.bounds);
+    } else {
+      // If not active, find it in offlineGeoTiffs to get bounds
+      const tiff = offlineGeoTiffs.find(t => t.id === id);
+      if (tiff && mapInstance) {
+        mapInstance.fitBounds([[tiff.bounds.minLat, tiff.bounds.minLng], [tiff.bounds.maxLat, tiff.bounds.maxLng]]);
+      }
+    }
+  };
+
   useEffect(() => {
     const saved = localStorage.getItem('scottish_golf_rating_toolkit_final');
     if (saved) { try { setHistory(JSON.parse(saved)); } catch (e) { console.error(e); } }
     
+    // Load offline GeoTIFFs
+    lidarGeoTiffService.loadAll().then(tiffs => {
+      setOfflineGeoTiffs(tiffs);
+    });
+
     const handleUpdate = (p: GeolocationPosition) => {
       setPos(prev => {
         // CRITICAL: If we are not following, do not let GNSS background updates overwrite manual/planning position
@@ -2795,45 +2983,45 @@ const App: React.FC = () => {
             <button onClick={() => { setIsPlanningSession(false); setIsFollowing(true); setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><Navigation2 size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
-              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Real-time distance measurement and elevation change</p>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Real-time distance measurement and elevation change</p>
             </button>
             <div className="bg-slate-900/50 border border-white/5 rounded-[1.8rem] py-4 px-6 flex justify-around items-center">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rating For:</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-white">Rating For:</span>
                 <div className="flex bg-slate-800 rounded-full p-1 border border-white/10">
-                    <button onClick={() => setRatingGender('Men')} className={`px-4 py-2 rounded-full text-sm font-semibold transition-all ${ratingGender === 'Men' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>Men</button>
-                    <button onClick={() => setRatingGender('Women')} className={`px-4 py-2 rounded-full text-sm font-semibold transition-all ${ratingGender === 'Women' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>Women</button>
+                    <button onClick={() => setRatingGender('Men')} className={`px-4 py-2 rounded-full text-sm font-semibold transition-all ${ratingGender === 'Men' ? 'bg-blue-600 text-white' : 'text-white'}`}>Men</button>
+                    <button onClick={() => setRatingGender('Women')} className={`px-4 py-2 rounded-full text-sm font-semibold transition-all ${ratingGender === 'Women' ? 'bg-blue-600 text-white' : 'text-white'}`}>Women</button>
                 </div>
             </div>
             <button onClick={() => { setIsPlanningSession(false); setIsFollowing(true); setViewingRecord(null); setMapPoints([]); setMapCompleted(false); setView('green'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-emerald-600/40"><Target size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-emerald-500">Green Mapper</h2>
-              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Green mapping and Effective Green Diameter</p>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Green mapping and Effective Green Diameter</p>
             </button>
 
 
             <button onClick={() => { setIsPlanningSession(true); setViewingRecord(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
-              <div className="w-16 h-16 bg-yellow-500/80 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-yellow-600/40"><LampDesk size={28} className="text-white-600" /></div>
+              <div className="w-16 h-16 bg-yellow-500/80 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-yellow-600/40"><LampDesk size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-yellow-500">Course Planning</h2>
-              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Pre-visit course search for LiDAR data and 3D analysis</p>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Pre-visit course search for LiDAR data and 3D analysis</p>
             </button>
 
             <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer">
               <div className="w-16 h-16 bg-rose-700 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-rose-700/40"><FileText size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-rose-700">Green Report Tool</h2>
-              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Batch process KML greens into PDF reports</p>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Batch process KML greens into PDF reports</p>
               <input type="file" accept=".kml" onChange={importKMLForReport} className="hidden" />
             </label>
 
             <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer">
               <div className="w-16 h-16 bg-amber-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-amber-600/40"><BarChart3 size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-amber-500">Planning Report Tool</h2>
-              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Generate 3D profiles for planned holes</p>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Generate 3D profiles for planned holes</p>
               <input type="file" accept=".kml" onChange={importKMLForPlanningReport} className="hidden" />
             </label>
             <button onClick={() => { setViewingRecord(null); setView('stimp'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
               <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-6 shadow-xl border border-blue-500/20"><Gauge size={28} className="text-lime-500" /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-lime-400">Stimp Slopes</h2>
-              <p className="text-white-400 text-[13px] font-medium text-center max-w-[220px]">Speed correction for sloping greens</p>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Speed correction for sloping greens</p>
             </button>
             <button onClick={() => setView('manual')} className="mt-2 bg-slate-800/50 border border-white/10 rounded-[1.8rem] py-6 flex items-center justify-center gap-4 active:bg-slate-700 transition-colors">
               <BookOpen size={20} className="text-blue-400" />
@@ -2851,16 +3039,16 @@ const App: React.FC = () => {
           <footer className="mt-auto pb-6 pt-12">
             {history.length > 0 && (
               <div className="mb-6">
-                <div className="flex items-center gap-2 px-2 mb-4"><Info size={12} className="text-blue-400" /><span className="text-[10px] font-bold tracking-[0.2em] text-slate-500 uppercase">Assessment History</span></div>
+                <div className="flex items-center gap-2 px-2 mb-4"><Info size={12} className="text-blue-400" /><span className="text-[10px] font-bold tracking-[0.2em] text-white uppercase">Assessment History</span></div>
                 <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar">
                   {history.map(item => (
                     <div key={item.id} className="relative shrink-0">
                       <button onClick={() => handleOpenRecord(item)} className="bg-slate-900 border border-white/10 px-6 py-5 rounded-[2rem] flex flex-col min-w-[170px] text-left shadow-lg active:scale-95 transition-transform">
-                        <div className="flex justify-between items-start mb-1"><span className="text-[8px] font-bold text-slate-500 uppercase tracking-widest">{item.type} {item.holeNumber && ` - Hole ${item.holeNumber}`}</span>{item.type === 'Green' ? <Target size={12} className="text-emerald-500/60" /> : <Navigation2 size={12} className="text-blue-500/60" />}</div>
+                        <div className="flex justify-between items-start mb-1"><span className="text-[8px] font-bold text-white uppercase tracking-widest">{item.type} {item.holeNumber && ` - Hole ${item.holeNumber}`}</span>{item.type === 'Green' ? <Target size={12} className="text-emerald-500/60" /> : <Navigation2 size={12} className="text-blue-500/60" />}</div>
                         <span className="text-xl font-bold text-white">{item.primaryValue}</span>
-                        <span className="text-[11px] font-bold text-slate-400 mt-1">{item.egdValue || item.secondaryValue}</span>
+                        <span className="text-[11px] font-bold text-white mt-1">{item.egdValue || item.secondaryValue}</span>
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); setHistory(h => h.filter(x => x.id !== item.id)); }} className="absolute -top-2 -right-2 w-8 h-8 bg-red-600 rounded-full flex items-center justify-center border-2 border-[#020617] text-white shadow-xl active:scale-90"><Trash2 size={12} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); setHistory(h => { const updated = h.filter(x => x.id !== item.id); localStorage.setItem('scottish_golf_rating_toolkit_final', JSON.stringify(updated)); return updated; }); }} className="absolute -top-2 -right-2 w-8 h-8 bg-red-600 rounded-full flex items-center justify-center border-2 border-[#020617] text-white shadow-xl active:scale-90"><Trash2 size={12} /></button>
                     </div>
                   ))}
                 </div>
@@ -2889,7 +3077,8 @@ const App: React.FC = () => {
           onClose={() => { setIsPlanningSession(false); setView('landing'); }} 
           onSelect={(lat, lng) => {
             setIsPlanningSession(true);
-            setIsFollowing(false);
+            setIsFollowing(true);
+            setMapLockKey(k => k + 1);
             setMapStyle('LiDAR DTM');
             setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
             setPos({ lat, lng, accuracy: 0.5, timestamp: Date.now(), alt: null, altAccuracy: null, source: 'Manual' });
@@ -2905,7 +3094,7 @@ const App: React.FC = () => {
               className="pointer-events-auto bg-slate-800 border border-white/20 w-[46px] h-[46px] rounded-full flex items-center justify-center shadow-2xl active:scale-95 transition-all"
               title="Home"
             >
-              <Home size={20} className="text-yellow-400" />
+              <Home size={20} className="text-white" />
             </button>
             <div className="flex gap-2 pointer-events-auto">
               {((view === 'track' && (trkActive || trkPoints.length > 0)) || (view === 'green' && mapActive) || viewingRecord) && (
@@ -2913,7 +3102,7 @@ const App: React.FC = () => {
               )}
               {view === 'track' && (
                 <button onClick={() => setOvalMode(m => m === 'off' ? 'scratch' : m === 'scratch' ? 'bogey' : 'off')} className="bg-slate-800 border border-white/20 rounded-full shadow-2xl active:scale-90 flex items-center justify-center w-[46px] h-[46px]">
-                  {ovalMode === 'off' && <CircleOff size={20} className="text-slate-400" />}
+                  {ovalMode === 'off' && <CircleOff size={20} className="text-white" />}
                   {ovalMode === 'scratch' && <span className="text-emerald-400 font-bold text-2xl flex items-center justify-center leading-none">S</span>}
                   {ovalMode === 'bogey' && <span className="text-yellow-400 font-bold text-2xl flex items-center justify-center leading-none">B</span>}
                 </button>
@@ -2925,13 +3114,13 @@ const App: React.FC = () => {
               )}
               <button 
                 onClick={() => { if (!isPlanningSession) { setIsFollowing(true); setMapLockKey(k => k + 1); setLocationResetKey(k => k + 1); } }} 
-                className={`bg-slate-800 border border-white/20 p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${isFollowing ? 'text-emerald-400' : 'text-slate-500'} ${isPlanningSession ? 'opacity-30 cursor-not-allowed' : ''}`} 
+                className={`bg-slate-800 border border-white/20 p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${isFollowing ? 'text-emerald-400' : 'text-white'} ${isPlanningSession ? 'opacity-30 cursor-not-allowed' : ''}`} 
                 title={isPlanningSession ? "GNSS Disabled in Planning Mode" : "Recenter Map"}
               > 
                 <Crosshair size={20} className={isFollowing && !isPlanningSession ? 'animate-pulse' : ''} />
               </button>
               <button onClick={() => setUnits(u => u === 'Yards' ? 'Metres' : 'Yards')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-emerald-400 shadow-2xl active:scale-90"><Ruler size={20} /></button>
-              {/* <button onClick={() => setShowTerrainManager(true)} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-amber-400 shadow-2xl active:scale-90"><Cpu size={20} /></button> */}
+              <button onClick={() => setShowTerrainManager(true)} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-amber-400 shadow-2xl active:scale-90"><Mountain size={20} /></button>
               <button onClick={() => setMapStyle(s => s === 'Street' ? 'Satellite' : s === 'Satellite' ? 'LiDAR DTM' : 'Street')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-blue-400 shadow-2xl active:scale-90"><Layers size={20} /></button>
             </div>
           </div>
@@ -2940,20 +3129,6 @@ const App: React.FC = () => {
               <>
                 <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
                 <MapRef onMap={setMapInstance} />
-                <SelectionHandler 
-                  active={selectionMode} 
-                  onSelectionComplete={(bounds) => {
-                    setSelectionBounds(bounds);
-                    setSelectionMode(false);
-                    setShowTerrainManager(true);
-                  }} 
-                />
-                {selectionBounds && (
-                  <Rectangle 
-                    bounds={selectionBounds} 
-                    pathOptions={{ color: '#10b981', weight: 2, fillOpacity: 0.1 }} 
-                  />
-                )}
                 <TileLayer 
                   url={(mapStyle === 'Satellite' || mapStyle === 'LiDAR DTM') 
                     ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" 
@@ -2970,7 +3145,7 @@ const App: React.FC = () => {
                     format="image/png"
                     transparent={true}
                     version="1.3.0"
-                    opacity={0.15}
+                    opacity={lidarGridOpacity * 0.5} // Scale it a bit as 1.0 might be too much for WMS
                     maxZoom={22}
                     maxNativeZoom={18}
                     minZoom={10}
@@ -2979,7 +3154,7 @@ const App: React.FC = () => {
                       load: () => { 
                         setLidarLayerLoading(false); 
                         tilesLoadedCount.current += 1;
-                        setLidarStatus('available');
+                        setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'available');
                       },
                       tileerror: () => { 
                         // Only set error if we haven't loaded ANY tiles yet
@@ -2990,9 +3165,76 @@ const App: React.FC = () => {
                     }}
                   />
                 )}
-                {mapStyle === 'LiDAR DTM' && <LidarGrid />}
+                <SelectionHandler 
+                  active={selectionMode} 
+                  onSelectionComplete={(bounds) => {
+                    setSelectionBounds(bounds);
+                    setSelectionMode(false);
+                    setShowTerrainManager(true);
+                  }} 
+                />
+                {selectionBounds && (
+                  <Rectangle 
+                    bounds={selectionBounds} 
+                    pathOptions={{ color: '#10b981', weight: 2, fillOpacity: 0.1 }} 
+                  />
+                )}
+                {discoveredTiles.map(tile => {
+                  const isSelected = selectedTileIds.has(tile.id);
+                  const isDownloaded = offlineGeoTiffs.some(t => t.id === tile.url);
+                  return (
+                    <React.Fragment key={tile.id}>
+                      <Rectangle 
+                        bounds={[[tile.bounds.minLat, tile.bounds.minLng], [tile.bounds.maxLat, tile.bounds.maxLng]]}
+                        eventHandlers={{
+                          click: () => !isDownloaded && handleToggleTileSelection(tile.id)
+                        }}
+                        pathOptions={{
+                          color: isDownloaded ? '#10b981' : (isSelected ? '#3b82f6' : '#facc15'),
+                          weight: isSelected ? 3 : 2,
+                          fill: true,
+                          fillOpacity: 0,
+                          dashArray: '5, 5'
+                        }}
+                      />
+                      <Marker 
+                        position={[tile.bounds.maxLat, tile.bounds.minLng]} 
+                        icon={L.divIcon({ 
+                          className: 'bg-transparent border-none', 
+                          html: `<div class="text-[7px] font-bold text-white bg-black/60 px-1 rounded whitespace-nowrap border border-white/20" style="transform: translate(2px, 2px)">${tile.id.split('_').pop()}<br/>${tile.resolution}m</div>`,
+                          iconSize: [0, 0]
+                        })}
+                        interactive={false}
+                      />
+                    </React.Fragment>
+                  );
+                })}
+                {Object.entries(activeGeoTiffOverlays).map(([id, overlay]) => (
+                  <React.Fragment key={id}>
+                    {overlay.dataUrl && (
+                      <ImageOverlay
+                        key={`${id}-${overlay.dataUrl.substring(0, 32)}`}
+                        url={overlay.dataUrl}
+                        bounds={overlay.bounds}
+                        opacity={geoTiffOpacities[id] ?? 0.6}
+                        zIndex={900}
+                        pane="overlayPane"
+                      />
+                    )}
+                    <Rectangle 
+                      bounds={overlay.bounds}
+                      pathOptions={{ 
+                        color: '#facc15', 
+                        weight: 3, 
+                        fill: false, 
+                        dashArray: '10, 10',
+                        opacity: 1
+                      }}
+                    />
+                  </React.Fragment>
+                ))}
                 <MapController 
-                  key={mapLockKey} 
+                  key={mapLockKey}
                   pos={pos} 
                   active={trkActive || mapActive} 
                   mapPoints={mapPoints} 
@@ -3229,7 +3471,7 @@ const App: React.FC = () => {
                     <Cpu size={20} className="text-blue-400" />
                     <h3 className="text-lg font-black uppercase tracking-tighter">LiDAR Diagnostic Data</h3>
                   </div>
-                  <button onClick={() => setShowLidarDebug(false)} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-slate-400 active:scale-90 transition-all pointer-events-auto">
+                  <button onClick={() => setShowLidarDebug(false)} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90 transition-all pointer-events-auto">
                     <X size={20} />
                   </button>
                 </div>
@@ -3493,11 +3735,21 @@ const App: React.FC = () => {
                   </>
                 )}
               </div>
-              {mapStyle === 'LiDAR DTM' && (
+              {(mapStyle === 'LiDAR DTM' || isPlanningSession) && (
                 <div className="pointer-events-none mt-1 flex justify-center">
                   {currentZoom < 10 ? (
                     <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl">
                       <span className="text-[9px] font-bold uppercase tracking-widest text-blue-400">Zoom in for LiDAR</span>
+                    </div>
+                  ) : lidarStatus === 'geotiff' ? (
+                    <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
+                      <CheckCircle2 size={10} className="text-emerald-400" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">GeoTIFF Active</span>
+                    </div>
+                  ) : lidarStatus === 'offline' ? (
+                    <div className="bg-blue-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
+                      <div className="w-2 h-2 bg-blue-400 rounded-full shadow-[0_0_8px_rgba(96,165,250,0.6)]" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-blue-400">Offline LiDAR</span>
                     </div>
                   ) : (lidarLayerLoading || lidarStatus === 'loading') ? (
                     <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl">
@@ -3523,13 +3775,13 @@ const App: React.FC = () => {
                 <div className="pointer-events-auto bg-slate-900/95 border border-white/20 rounded-[2.8rem] p-5 w-full max-w-[300px] shadow-2xl backdrop-blur-md flex flex-col items-center">
                   <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-3">Set Pivot Type:</span>
                   <div className="flex gap-2 mb-4 w-full">
-                    <button onClick={() => setPendingPivotType('common')} className={`flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 transition-all ${pendingPivotType === 'common' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-white/10 text-slate-400'}`}>Both</button>
-                    <button onClick={() => setPendingPivotType('scratch_cut')} className={`flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 transition-all ${pendingPivotType === 'scratch_cut' ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-white/10 text-slate-400'}`}>Scratch</button>
-                    <button onClick={() => setPendingPivotType('bogoy_round')} className={`flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 transition-all ${pendingPivotType === 'bogoy_round' ? 'bg-yellow-600 border-yellow-500 text-white' : 'bg-slate-800 border-white/10 text-slate-400'}`}>Bogey</button>
+                    <button onClick={() => setPendingPivotType('common')} className={`flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 transition-all ${pendingPivotType === 'common' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-white/10 text-white'}`}>Both</button>
+                    <button onClick={() => setPendingPivotType('scratch_cut')} className={`flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 transition-all ${pendingPivotType === 'scratch_cut' ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-white/10 text-white'}`}>Scratch</button>
+                    <button onClick={() => setPendingPivotType('bogoy_round')} className={`flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 transition-all ${pendingPivotType === 'bogoy_round' ? 'bg-yellow-600 border-yellow-500 text-white' : 'bg-slate-800 border-white/10 text-white'}`}>Bogey</button>
                   </div>
                   <div className="flex gap-2 w-full">
                     <button onClick={handleConfirmPivot} disabled={!pendingPivotType} className="flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 bg-blue-600 border-blue-500 text-white shadow-xl active:scale-95 disabled:opacity-30 transition-all">Confirm</button>
-                    <button onClick={() => setShowPivotMenu(false)} className="flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 bg-slate-800 border-slate-700/50 text-slate-400 shadow-xl active:scale-95">Cancel</button>
+                    <button onClick={() => setShowPivotMenu(false)} className="flex-1 h-12 rounded-full font-bold text-xs uppercase border-2 bg-slate-800 border-slate-700/50 text-white shadow-xl active:scale-95">Cancel</button>
                   </div>
                 </div>
               </div>
@@ -3556,6 +3808,37 @@ const App: React.FC = () => {
             setShowTerrainManager(false);
           }}
           selectionBounds={selectionBounds}
+          offlineGeoTiffs={offlineGeoTiffs}
+          onGeoTiffDownload={(tiff) => {
+            setOfflineGeoTiffs(prev => {
+              const exists = prev.find(t => t.id === tiff.id);
+              if (exists) return prev.map(t => t.id === tiff.id ? tiff : t);
+              return [...prev, tiff];
+            });
+          }}
+          onGeoTiffDelete={(id) => {
+            lidarGeoTiffService.delete(id).then(() => {
+              setOfflineGeoTiffs(prev => prev.filter(t => t.id !== id));
+              setActiveGeoTiffOverlays(prev => {
+                const next = { ...prev };
+                delete next[id];
+                return next;
+              });
+            });
+          }}
+          activeOverlays={activeGeoTiffOverlays}
+          onToggleOverlay={handleToggleGeoTiffOverlay}
+          lidarGridOpacity={lidarGridOpacity}
+          onLidarGridOpacityChange={setLidarGridOpacity}
+          geoTiffOpacities={geoTiffOpacities}
+          onGeoTiffOpacityChange={(id, opacity) => setGeoTiffOpacities(prev => ({ ...prev, [id]: opacity }))}
+          isOverlayLoading={isOverlayLoading}
+          onZoomTo={handleZoomToGeoTiff}
+          discoveredTiles={discoveredTiles}
+          onDiscoveredTilesChange={setDiscoveredTiles}
+          selectedTileIds={selectedTileIds}
+          onToggleTileSelection={handleToggleTileSelection}
+          onClearSelection={() => setSelectionBounds(null)}
         />
       )}
       <style>{`.leaflet-tile-pane { filter: brightness(0.8) contrast(1.1) saturate(0.85); }.no-scrollbar::-webkit-scrollbar { display: none; }.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
