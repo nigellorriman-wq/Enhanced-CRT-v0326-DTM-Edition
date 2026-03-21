@@ -374,7 +374,7 @@ The App is able to display the 'Accuracy Pattern' in real-time for Scratch and B
         <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
           <p className="text-blue-400 text-xs font-bold uppercase mb-2">Coverage Note</p>
           <p className="text-xs">The Scottish LiDAR dataset does not yet cover the entire country. The App attempts to source data from various editions and years to maximize coverage. In areas where LiDAR is unavailable, the system will rely on device-based sensors.</p>
- <p className="text-xs">Crown copyright Scottish Government, SEPA and Scottish Water (2012)..</p>
+ <p className="text-xs">Crown copyright Scottish Government, SEPA and Scottish Water (2012).</p>
         </div>
       </div>
     )
