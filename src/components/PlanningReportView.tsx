@@ -104,7 +104,21 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     const processAnchors = async (anchors: GeoPoint[]): Promise<ProfilePoint[]> => {
       const result: ProfilePoint[] = [];
       let totalDistMetres = 0;
-      const startAlt = anchors[0].alt || (await fetchLidar(anchors[0].lat, anchors[0].lng)) || 0;
+      
+      // Try to find a valid starting altitude for the baseline
+      let startAlt = anchors[0].alt || (await fetchLidar(anchors[0].lat, anchors[0].lng));
+      if (startAlt === null) {
+        // Search anchors for any valid altitude to use as baseline
+        for (const a of anchors) {
+          const alt = a.alt || (await fetchLidar(a.lat, a.lng));
+          if (alt !== null) {
+            startAlt = alt;
+            break;
+          }
+        }
+      }
+      const baselineAlt = startAlt !== null ? startAlt : 0;
+      let lastKnownAlt = baselineAlt;
 
       for (let i = 0; i < anchors.length - 1; i++) {
         const p1 = anchors[i];
@@ -112,7 +126,6 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
         const segmentDist = calculateDistance(p1, p2);
         
         // Determine interval based on GeoTIFF availability
-        // If we have offline data, we can afford a higher resolution (1m)
         const isOffline = lidarGeoTiffService.isAreaDownloaded(p1.lat, p1.lng);
         const interval = isOffline ? 1 : 5;
         
@@ -125,13 +138,19 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           const stepDistMetres = totalDistMetres + (segmentDist * t);
           
           const alt = await fetchLidar(lat, lng);
-          const currentAlt = alt !== null ? alt : (p1.alt || 0);
+          if (alt !== null) {
+            lastKnownAlt = alt;
+          } else if (step === 0 && p1.alt) {
+            lastKnownAlt = p1.alt;
+          }
+          
+          const currentAlt = lastKnownAlt;
 
           result.push({
             distance: stepDistMetres * 1.09361, // Yards for X-axis display
             distanceMetres: stepDistMetres,
-            elevationDiff: (currentAlt - startAlt) * 3.28084, // Feet
-            elevationDiffMetres: currentAlt - startAlt,
+            elevationDiff: (currentAlt - baselineAlt) * 3.28084, // Feet
+            elevationDiffMetres: currentAlt - baselineAlt,
             absoluteAltitude: currentAlt * 3.28084, // Feet
             absoluteAltitudeMetres: currentAlt,
             isPivot: step === 0 || (i === anchors.length - 2 && step === numSteps)
@@ -193,12 +212,25 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   };
 
   const renderChart = (data: ProfilePoint[], title: string, color: string) => {
+    if (!data || data.length === 0) return null;
     const isImperial = reportUnits === 'Yards';
     const xKey = isImperial ? 'distance' : 'distanceMetres';
     const yLeftKey = isImperial ? 'elevationDiff' : 'elevationDiffMetres';
     const yRightKey = isImperial ? 'absoluteAltitude' : 'absoluteAltitudeMetres';
     const xUnit = isImperial ? 'Yards' : 'Metres';
     const yUnit = isImperial ? 'Feet' : 'Metres';
+
+    // Calculate synchronized domains for both Y-axes to ensure visual alignment
+    const yLeftValues = data.map(p => p[yLeftKey as keyof ProfilePoint] as number);
+    const minLeft = Math.min(...yLeftValues);
+    const maxLeft = Math.max(...yLeftValues);
+    const diff = maxLeft - minLeft;
+    const padding = diff === 0 ? 10 : diff * 0.15;
+    const leftDomain = [minLeft - padding, maxLeft + padding];
+    
+    // The right axis (Absolute Altitude) must be offset by the starting altitude
+    const startAlt = data[0][yRightKey as keyof ProfilePoint] as number;
+    const rightDomain = [leftDomain[0] + startAlt, leftDomain[1] + startAlt];
 
     return (
       <div className="flex flex-col w-full mb-6">
@@ -227,6 +259,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 yAxisId="left"
                 tick={{ fontSize: 9, fill: '#0f172a' }}
                 stroke="#0f172a"
+                domain={leftDomain}
+                tickFormatter={(val) => Math.round(val).toString()}
               >
                 <Label value={`Elev Diff (${yUnit})`} angle={-90} position="insideLeft" offset={10} fontSize={10} fontWeight="bold" fill="#0f172a" />
               </YAxis>
@@ -236,6 +270,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 orientation="right"
                 tick={{ fontSize: 9, fill: '#0f172a' }}
                 stroke="#0f172a"
+                domain={rightDomain}
+                tickFormatter={(val) => Math.round(val).toString()}
               >
                 <Label value={`Altitude (${yUnit})`} angle={90} position="insideRight" offset={10} fontSize={10} fontWeight="bold" fill="#0f172a" />
               </YAxis>
