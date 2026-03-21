@@ -14,6 +14,7 @@ export interface OfflineGeoTiff {
     minLng: number;
     maxLng: number;
   };
+  corners?: [number, number][];
   resolution: number; // e.g. 0.5, 1, 2 (metres)
   blob: Blob;
   addedAt: number;
@@ -95,16 +96,25 @@ class LidarGeoTiffService {
     const image = await tiff.getImage();
     const [minX, minY, maxX, maxY] = image.getBoundingBox();
     
-    // Convert BNG bounds to WGS84 for metadata (used for map display)
-    const [swLng, swLat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
-    const [neLng, neLat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+    // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
+    // This ensures we use the full envelope to eliminate gaps between tiles
+    const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+    const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+    const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+    const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+    
+    const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
+    const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
+    const minLng = Math.min(p1Lng, p2Lng, p3Lng, p4Lng);
+    const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
     
     const resolution = image.getResolution()[0];
 
     const offlineData: OfflineGeoTiff = {
       id: url,
       name,
-      bounds: { minLat: swLat, maxLat: neLat, minLng: swLng, maxLng: neLng },
+      bounds: { minLat, maxLat, minLng, maxLng },
+      corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]],
       resolution,
       blob,
       addedAt: Date.now()
@@ -126,16 +136,24 @@ class LidarGeoTiffService {
     const image = await tiff.getImage();
     const [minX, minY, maxX, maxY] = image.getBoundingBox();
     
-    // Convert BNG bounds to WGS84 for metadata
-    const [swLng, swLat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
-    const [neLng, neLat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+    // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
+    const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+    const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+    const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+    const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+    
+    const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
+    const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
+    const minLng = Math.min(p1Lng, p2Lng, p3Lng, p4Lng);
+    const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
     
     const resolution = image.getResolution()[0];
 
     const offlineData: OfflineGeoTiff = {
       id: tiffId,
       name,
-      bounds: { minLat: swLat, maxLat: neLat, minLng: swLng, maxLng: neLng },
+      bounds: { minLat, maxLat, minLng, maxLng },
+      corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]],
       resolution,
       blob,
       addedAt: Date.now()
@@ -321,7 +339,7 @@ class LidarGeoTiffService {
   /**
    * Generates a color-mapped overlay for a GeoTIFF
    */
-  async generateOverlay(id: string): Promise<{ dataUrl: string; bounds: [[number, number], [number, number]]; timestamp?: number } | null> {
+  async generateOverlay(id: string): Promise<{ dataUrl: string; bounds: [[number, number], [number, number]]; corners?: [number, number][]; timestamp?: number } | null> {
     let entry = this.loadedTiffs.get(id);
     if (!entry) {
       await this.loadAll();
@@ -334,9 +352,17 @@ class LidarGeoTiffService {
     const height = image.getHeight();
     const [minX, minY, maxX, maxY] = image.getBoundingBox();
     
-    // Convert BNG bounds to WGS84 for Leaflet overlay
-    const [swLng, swLat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
-    const [neLng, neLat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+    // Convert all 4 BNG corners back to WGS84 for Leaflet overlay
+    // This ensures we use the full envelope to eliminate gaps between tiles
+    const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+    const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+    const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+    const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+    
+    const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
+    const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
+    const minLng = Math.min(p1Lng, p2Lng, p3Lng, p4Lng);
+    const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
 
     // Read all rasters
     let rasters;
@@ -394,18 +420,49 @@ class LidarGeoTiffService {
       lut[i * 3 + 2] = color.b;
     }
 
-    for (let i = 0; i < data.length; i++) {
-      const val = data[i];
-      const idx = i * 4;
-      if (val === -9999 || val === -3.4028234663852886e+38 || isNaN(val)) {
-        d[idx + 3] = 0; // Transparent (other channels are 0 by default)
-      } else {
-        const normalized = Math.max(0, Math.min(1, (val - min) / (max - min)));
-        const lutIdx = Math.floor(normalized * 255) * 3;
-        d[idx] = lut[lutIdx];
-        d[idx + 1] = lut[lutIdx + 1];
-        d[idx + 2] = lut[lutIdx + 2];
-        d[idx + 3] = 255;
+    // Calculate BNG coordinates for the canvas corners (the envelope)
+    // to allow for fast affine interpolation of BNG coordinates across the canvas.
+    const [e_nw, n_nw] = proj4("EPSG:4326", "EPSG:27700", [minLng, maxLat]);
+    const [e_ne, n_ne] = proj4("EPSG:4326", "EPSG:27700", [maxLng, maxLat]);
+    const [e_sw, n_sw] = proj4("EPSG:4326", "EPSG:27700", [minLng, minLat]);
+    
+    const de_col = (e_ne - e_nw) / width;
+    const dn_col = (n_ne - n_nw) / width;
+    const de_row = (e_sw - e_nw) / height;
+    const dn_row = (n_sw - n_nw) / height;
+
+    const res = image.getResolution();
+    const resX = res[0];
+    const resY = Math.abs(res[1]);
+
+    for (let r = 0; r < height; r++) {
+      let curr_e = e_nw + r * de_row;
+      let curr_n = n_nw + r * dn_row;
+      for (let c = 0; c < width; c++) {
+        const x = Math.floor((curr_e - minX) / resX);
+        const y = Math.floor((maxY - curr_n) / resY);
+        const canvasIdx = (r * width + c) * 4;
+        
+        if (x >= 0 && x < width && y >= 0 && y < height) {
+          const tiffIdx = y * width + x;
+          const val = data[tiffIdx];
+          
+          if (val === -9999 || val === -3.4028234663852886e+38 || isNaN(val)) {
+            d[canvasIdx + 3] = 0;
+          } else {
+            const normalized = Math.max(0, Math.min(1, (val - min) / (max - min)));
+            const lutIdx = Math.floor(normalized * 255) * 3;
+            d[canvasIdx] = lut[lutIdx];
+            d[canvasIdx + 1] = lut[lutIdx + 1];
+            d[canvasIdx + 2] = lut[lutIdx + 2];
+            d[canvasIdx + 3] = 255;
+          }
+        } else {
+          d[canvasIdx + 3] = 0; // Transparent (outside BNG tile bounds)
+        }
+        
+        curr_e += de_col;
+        curr_n += dn_col;
       }
     }
 
@@ -414,7 +471,8 @@ class LidarGeoTiffService {
     
     return {
       dataUrl,
-      bounds: [[swLat, swLng], [neLat, neLng]],
+      bounds: [[minLat, minLng], [maxLat, maxLng]],
+      corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]],
       timestamp: Date.now()
     };
   }

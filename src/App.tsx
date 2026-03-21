@@ -374,6 +374,7 @@ The App is able to display the 'Accuracy Pattern' in real-time for Scratch and B
         <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
           <p className="text-blue-400 text-xs font-bold uppercase mb-2">Coverage Note</p>
           <p className="text-xs">The Scottish LiDAR dataset does not yet cover the entire country. The App attempts to source data from various editions and years to maximize coverage. In areas where LiDAR is unavailable, the system will rely on device-based sensors.</p>
+ <p className="text-xs">Crown copyright Scottish Government, SEPA and Scottish Water (2012)..</p>
         </div>
       </div>
     )
@@ -382,7 +383,7 @@ The App is able to display the 'Accuracy Pattern' in real-time for Scratch and B
     title: "Help and suggestions",
     color: "text-red-400",
     icon: <Eye className="text-red-400" />,
-    content: "This App is under development. If you require assistance or have any suggestions, please email me at nigel.lorriman@gmail.com  Version - Jan 2026"
+    content: "This App is under development. If you require assistance or have any suggestions, please email me at nigel.lorriman@gmail.com  Version 4.0 - Mar 2026"
   }
 ];
 
@@ -3364,8 +3365,8 @@ const App: React.FC = () => {
 
                   return (
                     <React.Fragment key={`discovered-group-${gridRef}`}>
-                      <Rectangle 
-                        bounds={[[bestTile.bounds.minLat, bestTile.bounds.minLng], [bestTile.bounds.maxLat, bestTile.bounds.maxLng]]}
+                      <Polygon 
+                        positions={bestTile.corners}
                         eventHandlers={{
                           click: () => !isAnyDownloaded && handleToggleTileSelection(selectedTile.id)
                         }}
@@ -3402,9 +3403,9 @@ const App: React.FC = () => {
                       pane="overlayPane"
                     />
                     )}
-                    <Rectangle 
-                      key={`rect-${id}`}
-                      bounds={overlay.bounds}
+                    <Polygon 
+                      key={`poly-${id}`}
+                      positions={(overlay as any).corners || overlay.bounds}
                       pathOptions={{ 
                         color: '#facc15', 
                         weight: 3, 

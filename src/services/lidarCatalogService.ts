@@ -19,6 +19,7 @@ export interface LidarTile {
     minLng: number;
     maxLng: number;
   };
+  corners: [number, number][];
 }
 
 class LidarCatalogService {
@@ -63,9 +64,17 @@ class LidarCatalogService {
             // Calculate pixel dimensions for 1km tile at requested resolution
             const size = Math.round(1000 / res);
 
-            // Convert BNG corners back to WGS84 for the tile bounds metadata (used for map display)
-            const [swLng, swLat] = proj4("EPSG:27700", "EPSG:4326", [e, n]);
-            const [neLng, neLat] = proj4("EPSG:27700", "EPSG:4326", [e + 1000, n + 1000]);
+            // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
+            // This ensures we use the full envelope to eliminate gaps between tiles
+            const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [e, n]);
+            const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [e + 1000, n]);
+            const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [e + 1000, n + 1000]);
+            const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [e, n + 1000]);
+            
+            const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
+            const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
+            const minLng = Math.min(p1Lng, p2Lng, p3Lng, p4Lng);
+            const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
 
             const tile: LidarTile = {
               id,
@@ -76,11 +85,12 @@ class LidarCatalogService {
               phase: phase,
               gridRef,
               bounds: {
-                minLat: swLat,
-                maxLat: neLat,
-                minLng: swLng,
-                maxLng: neLng
-              }
+                minLat,
+                maxLat,
+                minLng,
+                maxLng
+              },
+              corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]]
             };
 
             const existing = tilesMap.get(gridRef) || [];
