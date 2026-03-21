@@ -151,20 +151,6 @@ export interface SavedRecord {
   isPlanning?: boolean;
 }
 
-export interface OfflineLidarData {
-  courseName: string;
-  minLat: number;
-  maxLat: number;
-  minLng: number;
-  maxLng: number;
-  resolution: number;
-  rows: number;
-  cols: number;
-  grid?: Float32Array | (number | null)[];
-  blob?: Blob;
-  headerOffset?: number;
-}
-
 /** --- SHOT TARGETS (Yards) --- **/
 const SHOT_TARGETS = {
   Men: {
@@ -798,6 +784,7 @@ const calculateEffectivePathsAndMetrics = (
   if (raterPathPoints.length < 2) {
     return {
       effectivePaths: { scratch: [], bogey: [] },
+      effectiveAnchors: { scratch: [], bogey: [] },
       effectiveDistances: { scratch: 0, bogey: 0 },
       effectiveElevations: { scratch: 0, bogey: 0 },
     };
@@ -806,6 +793,10 @@ const calculateEffectivePathsAndMetrics = (
   const sortedPivots = [...pivotRecords].sort((a, b) => a.point.timestamp - b.point.timestamp);
   const startPoint = raterPathPoints[0];
   const endPoint = raterPathPoints[raterPathPoints.length - 1];
+
+  // Pre-calculate timestamp to index map for faster lookups
+  const timestampToIndex = new Map<number, number>();
+  raterPathPoints.forEach((p, i) => timestampToIndex.set(p.timestamp, i));
 
   const getAnchors = (forScratch: boolean): GeoPoint[] => {
     let anchors: GeoPoint[] = [startPoint];
@@ -823,7 +814,9 @@ const calculateEffectivePathsAndMetrics = (
     if (anchors[anchors.length - 1].timestamp !== endPoint.timestamp) {
       anchors.push(endPoint);
     }
-    return Array.from(new Map(anchors.map(p => [p.timestamp, p])).values()).sort((a, b) => a.timestamp - b.timestamp);
+    // Ensure uniqueness and sorting
+    const unique = Array.from(new Map(anchors.map(p => [p.timestamp, p])).values());
+    return unique.sort((a, b) => a.timestamp - b.timestamp);
   };
 
   const scratchAnchors = getAnchors(true);
@@ -838,28 +831,46 @@ const calculateEffectivePathsAndMetrics = (
       const p1 = anchors[i];
       const p2 = anchors[i+1];
       let shouldBeStraight = false;
-      const p1IndexInRaterPath = raterPathPoints.findIndex(rp => rp.timestamp === p1.timestamp);
-      const p2IndexInRaterPath = raterPathPoints.findIndex(rp => rp.timestamp === p2.timestamp);
+      
+      const p1Idx = timestampToIndex.get(p1.timestamp) ?? -1;
+      const p2Idx = timestampToIndex.get(p2.timestamp) ?? -1;
 
-      if (p1IndexInRaterPath === -1 || p2IndexInRaterPath === -1 || p1IndexInRaterPath >= p2IndexInRaterPath) {
+      if (p1Idx === -1 || p2Idx === -1 || p1Idx >= p2Idx) {
         shouldBeStraight = true;
       } else {
-        const segmentInRaterPath = raterPathPoints.slice(p1IndexInRaterPath + 1, p2IndexInRaterPath); 
+        // Optimization: Check if any relevant pivots are between p1 and p2 in the rater path
+        // Instead of slice().some(), we can just check the sortedPivots list
         if (isScratchPath) {
-          const p2IsScratchCutPivot = sortedPivots.some(p => p.point.timestamp === p2.timestamp && p.type === 'scratch_cut');
-          const skippedBogoyRoundPivots = sortedPivots.filter(p => p.type === 'bogoy_round' && segmentInRaterPath.some(rp => rp.timestamp === p.point.timestamp));
-          if (p2IsScratchCutPivot || skippedBogoyRoundPivots.length > 0) shouldBeStraight = true;
-        } else { 
-          const skippedScratchCutPivots = sortedPivots.filter(p => p.type === 'scratch_cut' && segmentInRaterPath.some(rp => rp.timestamp === p.point.timestamp));
-          if (skippedScratchCutPivots.length > 0) shouldBeStraight = true;
+          const p2IsScratchCut = sortedPivots.some(p => p.point.timestamp === p2.timestamp && p.type === 'scratch_cut');
+          if (p2IsScratchCut) {
+            shouldBeStraight = true;
+          } else {
+            // Check if any bogey_round pivots exist between p1 and p2 timestamps
+            const hasSkippedBogey = sortedPivots.some(p => 
+              p.type === 'bogoy_round' && 
+              p.point.timestamp > p1.timestamp && 
+              p.point.timestamp < p2.timestamp
+            );
+            if (hasSkippedBogey) shouldBeStraight = true;
+          }
+        } else {
+          // Check if any scratch_cut pivots exist between p1 and p2 timestamps
+          const hasSkippedScratch = sortedPivots.some(p => 
+            p.type === 'scratch_cut' && 
+            p.point.timestamp > p1.timestamp && 
+            p.point.timestamp < p2.timestamp
+          );
+          if (hasSkippedScratch) shouldBeStraight = true;
         }
       }
       
       if (shouldBeStraight) {
         path.push(...getInterpolatedLine(p1, p2, 10).slice(1));
       } else {
-        if (p1IndexInRaterPath !== -1 && p2IndexInRaterPath !== -1 && p1IndexInRaterPath < p2IndexInRaterPath) {
-          path.push(...raterPathPoints.slice(p1IndexInRaterPath + 1, p2IndexInRaterPath + 1));
+        if (p1Idx !== -1 && p2Idx !== -1 && p1Idx < p2Idx) {
+          for (let j = p1Idx + 1; j <= p2Idx; j++) {
+            path.push(raterPathPoints[j]);
+          }
         } else {
           path.push(...getInterpolatedLine(p1, p2, 10).slice(1));
         }
@@ -951,8 +962,9 @@ const AccuracyOvals: React.FC<{
 const MapController: React.FC<{ 
   pos: GeoPoint | null, active: boolean, mapPoints: GeoPoint[], completed: boolean, viewingRecord: SavedRecord | null, mode: AppView, trkPoints: GeoPoint[], isFollowing: boolean, setIsFollowing: (v: boolean) => void,
   onMapMove?: (lat: number, lng: number) => void,
-  onZoomChange?: (zoom: number) => void
-}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove, onZoomChange }) => {
+  onZoomChange?: (zoom: number) => void,
+  activeLidarOverlay?: any
+}> = ({ pos, active, mapPoints, completed, viewingRecord, mode, trkPoints, isFollowing, setIsFollowing, onMapMove, onZoomChange, activeLidarOverlay }) => {
   const map = useMap();
   const lastViewId = useRef<string | null>(null);
   const hasInitialLock = useRef(false);
@@ -969,54 +981,97 @@ const MapController: React.FC<{
       }
     },
     move: () => {
+      if (!isProgrammatic.current && onMapMove && !isFollowing) {
+        const center = map.getCenter();
+        onMapMove(center.lat, center.lng);
+      }
+    },
+    moveend: () => {
+      if (isProgrammatic.current) {
+        isProgrammatic.current = false;
+        return;
+      }
       if (onMapMove && !isFollowing) {
         const center = map.getCenter();
         onMapMove(center.lat, center.lng);
       }
     },
     zoomend: () => {
+      if (isProgrammatic.current) {
+        isProgrammatic.current = false;
+        return;
+      }
       if (onZoomChange && !isFollowing) {
         onZoomChange(map.getZoom());
       }
     }
   });
 
-useEffect(() => {
-  const currentId = viewingRecord ? viewingRecord.id : (active ? 'active' : 'idle');
-  if (lastViewId.current !== currentId) {
-    // When switching to a new record or starting a new hole, 
-    // we want the map to automatically snap to the data.
-    setIsFollowing(true); 
-    lastViewId.current = currentId;
-  }
-}, [viewingRecord, active]);
+  const lastLidarOverlayId = useRef<string | null>(null);
+  const lastFittedId = useRef<string | null>(null);
 
-useEffect(() => {
-    const currentPts = mode === 'green' ? mapPoints : trkPoints;
-    
-    prevPointsLength.current = currentPts.length;
+  useEffect(() => {
+    const currentId = viewingRecord ? viewingRecord.id : (active ? 'active' : 'idle');
+    if (lastViewId.current !== currentId) {
+      setIsFollowing(true); 
+      lastViewId.current = currentId;
+      lastFittedId.current = null; // Reset fitted state when view changes
+    }
+  }, [viewingRecord, active]);
 
+  useEffect(() => {
     // Gatekeeper: if "Follow" is toggled off (manual movement), stop here
     if (!isFollowing) return;
-  
+
     if (viewingRecord) {
+      if (lastFittedId.current === viewingRecord.id) return;
       const pts = viewingRecord.type === 'Green' ? viewingRecord.points : viewingRecord.raterPathPoints;
       if (pts && pts.length > 0) {
         const bounds = L.latLngBounds(pts.map(p => [p.lat, p.lng]));
         isProgrammatic.current = true;
         map.fitBounds(bounds, { padding: [40, 40], paddingBottomRight: [40, 280], animate: true });
         map.once('moveend', () => { isProgrammatic.current = false; });
+        lastFittedId.current = viewingRecord.id;
       }
     } else if (completed && mode === 'green' && mapPoints.length > 2) {
+      const fitId = `completed-green-${mapPoints.length}`;
+      if (lastFittedId.current === fitId) return;
       const bounds = L.latLngBounds(mapPoints.map(p => [p.lat, p.lng]));
       isProgrammatic.current = true;
       map.fitBounds(bounds, { padding: [40, 40], paddingBottomRight: [40, 280], animate: true });
       map.once('moveend', () => { isProgrammatic.current = false; });
+      lastFittedId.current = fitId;
     } else if (!active && mode === 'track' && trkPoints.length > 1) {
+      const fitId = `completed-track-${trkPoints.length}`;
+      if (lastFittedId.current === fitId) return;
       const bounds = L.latLngBounds(trkPoints.map(p => [p.lat, p.lng]));
       isProgrammatic.current = true;
       map.fitBounds(bounds, { padding: [40, 40], paddingBottomRight: [40, 280], animate: true });
       map.once('moveend', () => { isProgrammatic.current = false; });
+      lastFittedId.current = fitId;
+    } else if (active && pos) {
+      // Prioritize following user during active mapping
+      const accuracyImproved = pos.accuracy < prevPosAccuracy.current * 0.7;
+      const currentCenter = map.getCenter();
+      const distMoved = L.latLng(pos.lat, pos.lng).distanceTo(currentCenter);
+      
+      if (!hasInitialLock.current || accuracyImproved || distMoved > 1) {
+        const targetZoom = (map.getZoom() < 10 || accuracyImproved) ? 19 : map.getZoom();
+        isProgrammatic.current = true;
+        map.setView([pos.lat, pos.lng], targetZoom, { animate: true });
+        map.once('moveend', () => { isProgrammatic.current = false; });
+        hasInitialLock.current = true;
+        prevPosAccuracy.current = pos.accuracy;
+      }
+    } else if (activeLidarOverlay) {
+      // Fit to LiDAR overlay bounds only if it's new or we haven't locked yet
+      if (lastLidarOverlayId.current !== activeLidarOverlay.id) {
+        const bounds = L.latLngBounds(activeLidarOverlay.bounds);
+        isProgrammatic.current = true;
+        map.fitBounds(bounds, { padding: [40, 40], animate: true });
+        lastLidarOverlayId.current = activeLidarOverlay.id;
+        hasInitialLock.current = true;
+      }
     } else if (pos) {
       const accuracyImproved = pos.accuracy < prevPosAccuracy.current * 0.7;
       const currentCenter = map.getCenter();
@@ -1031,7 +1086,7 @@ useEffect(() => {
         prevPosAccuracy.current = pos.accuracy;
       }
     }
-  }, [pos, active, map, completed, mapPoints, viewingRecord, mode, trkPoints, isFollowing]);
+  }, [pos, active, map, completed, mapPoints, viewingRecord, mode, trkPoints, isFollowing, activeLidarOverlay]);
 
   return null;
 };
@@ -1648,9 +1703,6 @@ const ReportView: React.FC<{
 const TerrainManager: React.FC<{ 
   map: L.Map | null, 
   onClose: () => void, 
-  onDownload: (data: OfflineLidarData) => void,
-  currentOffline: OfflineLidarData | null,
-  onLoad: (data: OfflineLidarData) => void,
   onDrawMode: () => void,
   selectionBounds: L.LatLngBounds | null,
   offlineGeoTiffs: OfflineGeoTiff[],
@@ -1668,21 +1720,30 @@ const TerrainManager: React.FC<{
   onDiscoveredTilesChange: (tiles: LidarTile[]) => void,
   selectedTileIds: Set<string>,
   onToggleTileSelection: (id: string) => void,
-  onClearSelection: () => void
+  onClearSelection: () => void,
+  onSetSelection: (ids: Set<string>) => void
 }> = ({ 
-  map, onClose, onDownload, currentOffline, onLoad, onDrawMode, selectionBounds, 
+  map, onClose, onDrawMode, selectionBounds, 
   offlineGeoTiffs, onGeoTiffDownload, onGeoTiffDelete, activeOverlays, 
   onToggleOverlay, lidarGridOpacity, onLidarGridOpacityChange, geoTiffOpacities, 
   onGeoTiffOpacityChange, isOverlayLoading, onZoomTo,
   discoveredTiles, onDiscoveredTilesChange, selectedTileIds, onToggleTileSelection,
-  onClearSelection
+  onClearSelection, onSetSelection
 }) => {
-  const [courseName, setCourseName] = useState(currentOffline?.courseName || '');
   const [isDownloading, setIsDownloading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'geotiff' | 'legacy'>('geotiff');
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+
+  const groupedTiles = useMemo(() => {
+    const groups = new Map<string, LidarTile[]>();
+    discoveredTiles.forEach(tile => {
+      const existing = groups.get(tile.gridRef) || [];
+      groups.set(tile.gridRef, [...existing, tile]);
+    });
+    return groups;
+  }, [discoveredTiles]);
 
   const handleSearchTiles = async () => {
     if (!map) return;
@@ -1696,10 +1757,31 @@ const TerrainManager: React.FC<{
         minLng: bounds.getWest(),
         maxLng: bounds.getEast()
       };
+
+      // Safety check: Don't search if area is too large (> 0.1 degrees in either dimension)
+      if (!selectionBounds && (searchBounds.maxLat - searchBounds.minLat > 0.1 || searchBounds.maxLng - searchBounds.minLng > 0.1)) {
+        setError('Map area too large. Please zoom in or select a specific area.');
+        setIsSearching(false);
+        return;
+      }
+
       const tiles = await lidarCatalogService.findTiles(searchBounds);
       onDiscoveredTilesChange(tiles);
       if (tiles.length > 0) {
-        onClearSelection();
+        // Smart selection: For each grid square, pick the latest phase at highest resolution
+        const gridMap = new Map<string, LidarTile>();
+        tiles.forEach(tile => {
+          const existing = gridMap.get(tile.gridRef);
+          if (!existing) {
+            gridMap.set(tile.gridRef, tile);
+          } else {
+            // Prioritize resolution (lower value is better), then phase (higher value is better)
+            if (tile.resolution < existing.resolution || (tile.resolution === existing.resolution && tile.phase > existing.phase)) {
+              gridMap.set(tile.gridRef, tile);
+            }
+          }
+        });
+        onSetSelection(new Set(Array.from(gridMap.values()).map(t => t.id)));
       }
     } catch (err) {
       setError('Failed to discover tiles');
@@ -1717,7 +1799,34 @@ const TerrainManager: React.FC<{
       const downloaded = all.find(t => t.id === tile.url);
       if (downloaded) onGeoTiffDownload(downloaded);
     } catch (err: any) {
-      setError(err.message || `Failed to download ${tile.name}`);
+      console.error(`Failed to download ${tile.name}`, err);
+      
+      // Try fallback to other phases or resolutions for the same gridRef
+      const fallbacks = discoveredTiles
+        .filter(t => t.gridRef === tile.gridRef && t.id !== tile.id)
+        .sort((a, b) => {
+          if (a.resolution !== b.resolution) return a.resolution - b.resolution;
+          return b.phase - a.phase;
+        });
+      
+      let fallbackSuccess = false;
+      for (const fallback of fallbacks) {
+        try {
+          console.log(`Trying fallback for ${tile.gridRef}: ${fallback.name}`);
+          await lidarGeoTiffService.downloadAndStore(fallback.url, fallback.name);
+          const all = await lidarGeoTiffService.loadAll();
+          const downloaded = all.find(t => t.id === fallback.url);
+          if (downloaded) onGeoTiffDownload(downloaded);
+          fallbackSuccess = true;
+          break;
+        } catch (fe) {
+          console.error(`Fallback failed for ${fallback.name}`, fe);
+        }
+      }
+      
+      if (!fallbackSuccess) {
+        setError(err.message || `Failed to download ${tile.name} and no fallbacks available.`);
+      }
     } finally {
       setIsDownloading(false);
     }
@@ -1730,6 +1839,7 @@ const TerrainManager: React.FC<{
     setIsDownloading(true);
     setError(null);
     let successCount = 0;
+    const downloadedUrls: string[] = [];
     
     try {
       for (let i = 0; i < selectedTiles.length; i++) {
@@ -1737,15 +1847,41 @@ const TerrainManager: React.FC<{
         setProgress(Math.round(((i + 1) / selectedTiles.length) * 100));
         try {
           await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
+          downloadedUrls.push(tile.url);
           successCount++;
         } catch (e) {
           console.error(`Failed to download ${tile.name}`, e);
+          // Try fallback to other phases or resolutions for the same gridRef
+          const fallbacks = discoveredTiles
+            .filter(t => t.gridRef === tile.gridRef && t.id !== tile.id)
+            .sort((a, b) => {
+              if (a.resolution !== b.resolution) return a.resolution - b.resolution;
+              return b.phase - a.phase;
+            });
+          
+          let fallbackSuccess = false;
+          for (const fallback of fallbacks) {
+            try {
+              console.log(`Trying fallback for ${tile.gridRef}: ${fallback.name}`);
+              await lidarGeoTiffService.downloadAndStore(fallback.url, fallback.name);
+              downloadedUrls.push(fallback.url);
+              successCount++;
+              fallbackSuccess = true;
+              break;
+            } catch (fe) {
+              console.error(`Fallback failed for ${fallback.name}`, fe);
+            }
+          }
+          
+          if (!fallbackSuccess) {
+            console.error(`No available phases for ${tile.gridRef} could be downloaded.`);
+          }
         }
       }
       
       const all = await lidarGeoTiffService.loadAll();
       all.forEach(tiff => {
-        if (selectedTiles.some(st => st.url === tiff.id)) {
+        if (downloadedUrls.includes(tiff.id)) {
           onGeoTiffDownload(tiff);
         }
       });
@@ -1761,6 +1897,14 @@ const TerrainManager: React.FC<{
     }
   };
 
+  const handleExportTiff = async (id: string) => {
+    try {
+      await lidarGeoTiffService.exportStoredTiff(id);
+    } catch (err: any) {
+      setError(err.message || "Failed to export GeoTIFF");
+    }
+  };
+
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -1770,51 +1914,21 @@ const TerrainManager: React.FC<{
       reader.onload = async (event) => {
         try {
           const buffer = event.target?.result as ArrayBuffer;
+          if (!buffer) return;
           
           if (file.name.toLowerCase().endsWith('.tif') || file.name.toLowerCase().endsWith('.tiff')) {
             const blob = new Blob([buffer]);
-            await lidarGeoTiffService.downloadAndStore(URL.createObjectURL(blob), file.name);
+            const tiffId = await lidarGeoTiffService.storeBlob(blob, file.name);
             const all = await lidarGeoTiffService.loadAll();
-            const imported = all.find(t => t.name === file.name);
+            const imported = all.find(t => t.id === tiffId);
             if (imported) onGeoTiffDownload(imported);
-            return;
-          }
-
-          const view = new DataView(buffer);
-          const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-          
-          if (magic === 'SGLD') {
-            const version = view.getUint8(4);
-            let offset = 5;
-            const nameLen = view.getUint8(offset++);
-            const decoder = new TextDecoder();
-            const courseName = decoder.decode(new Uint8Array(buffer, offset, nameLen));
-            offset += nameLen;
-            
-            const minLat = view.getFloat64(offset); offset += 8;
-            const maxLat = view.getFloat64(offset); offset += 8;
-            const minLng = view.getFloat64(offset); offset += 8;
-            const maxLng = view.getFloat64(offset); offset += 8;
-            const resolution = view.getFloat32(offset); offset += 4;
-            const rows = view.getInt32(offset); offset += 4;
-            const cols = view.getInt32(offset); offset += 4;
-            
-            const padding = (4 - (offset % 4)) % 4;
-            offset += padding;
-            
-            onLoad({ 
-              courseName, minLat, maxLat, minLng, maxLng, resolution, rows, cols, 
-              blob: file, 
-              headerOffset: offset 
-            });
           }
         } catch (err) {
-          setError('Failed to parse terrain file');
+          setError('Failed to parse GeoTIFF file');
         }
       };
       reader.readAsArrayBuffer(file);
     });
-    setTimeout(onClose, 500);
   };
 
   return (
@@ -1835,209 +1949,238 @@ const TerrainManager: React.FC<{
           </button>
         </div>
 
-        <div className="flex bg-slate-950 p-1 rounded-2xl mb-6 border border-white/5">
-          <button 
-            onClick={() => setActiveTab('geotiff')}
-            className={`flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all ${activeTab === 'geotiff' ? 'bg-blue-600 text-white' : 'text-white'}`}
-          >
-            GeoTIFF Tiles
-          </button>
-          <button 
-            onClick={() => setActiveTab('legacy')}
-            className={`flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all ${activeTab === 'legacy' ? 'bg-blue-600 text-white' : 'text-white'}`}
-          >
-            Legacy SGLD
-          </button>
-        </div>
-
         <div className="flex-1 overflow-y-auto no-scrollbar space-y-6">
-          {activeTab === 'geotiff' ? (
-            <>
-              <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-xs font-bold text-white uppercase tracking-widest">Tile Discovery</h3>
-                  <button 
-                    onClick={onDrawMode}
-                    className="text-[9px] font-bold text-blue-400 uppercase tracking-widest hover:underline"
-                  >
-                    {selectionBounds ? 'Area Selected' : 'Select Area on Map'}
-                  </button>
-                </div>
+          <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xs font-bold text-white uppercase tracking-widest">Tile Discovery</h3>
+              <button 
+                onClick={onDrawMode}
+                className="text-[9px] font-bold text-blue-400 uppercase tracking-widest hover:underline"
+              >
+                {selectionBounds ? 'Area Selected' : 'Select Area on Map'}
+              </button>
+            </div>
 
-                <div className="mb-4 bg-slate-900/50 p-3 rounded-xl border border-white/5">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-[8px] font-bold text-yellow-400 uppercase tracking-widest">Online LiDAR Opacity</span>
-                    <span className="text-[8px] font-bold text-blue-400">{Math.round(lidarGridOpacity * 100)}%</span>
+            <div className="mb-4 bg-slate-900/50 p-3 rounded-xl border border-white/5">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-[8px] font-bold text-yellow-400 uppercase tracking-widest">Online LiDAR Opacity</span>
+                <span className="text-[8px] font-bold text-blue-400">{Math.round(lidarGridOpacity * 100)}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0" 
+                max="1" 
+                step="0.01" 
+                value={lidarGridOpacity} 
+                onChange={(e) => onLidarGridOpacityChange(parseFloat(e.target.value))}
+                className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              />
+            </div>
+            
+            <button 
+              onClick={handleSearchTiles}
+              disabled={isSearching}
+              className="w-full bg-blue-600 text-white font-bold py-3 rounded-2xl shadow-lg shadow-blue-600/20 active:scale-95 transition-all uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 mb-4"
+            >
+              {isSearching ? <RotateCcw className="animate-spin" size={14} /> : <Search size={14} />}
+              {isSearching ? 'Searching Catalog...' : 'Find Tiles for Selected Area'}
+            </button>
+
+            {discoveredTiles.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-xl border border-white/5">
+                  <div>
+                    <p className="text-[10px] font-bold text-white uppercase tracking-widest">{discoveredTiles.length} Tiles Found</p>
+                    <p className="text-[8px] text-yellow-400 uppercase tracking-widest">{selectedTileIds.size} Selected</p>
+                    <button 
+                      onClick={onClearSelection}
+                      className="text-[8px] text-blue-400 hover:text-blue-300 underline mt-1 block"
+                    >
+                      Clear Selection
+                    </button>
                   </div>
-                  <input 
-                    type="range" 
-                    min="0" 
-                    max="1" 
-                    step="0.01" 
-                    value={lidarGridOpacity} 
-                    onChange={(e) => onLidarGridOpacityChange(parseFloat(e.target.value))}
-                    className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                  />
+                  <div className="flex flex-col gap-2 items-end">
+                    <button 
+                      onClick={handleDownloadSelected}
+                      disabled={isDownloading || selectedTileIds.size === 0}
+                      className="bg-blue-600 text-white px-4 py-2 rounded-lg text-[9px] font-bold uppercase tracking-widest active:scale-95 disabled:opacity-30 transition-all flex items-center gap-2"
+                    >
+                      {isDownloading ? <RotateCcw size={12} className="animate-spin" /> : <Download size={12} />}
+                      Download Selected
+                    </button>
+                    <button 
+                      onClick={() => onDiscoveredTilesChange([])}
+                      className="text-[8px] text-rose-400 hover:text-rose-300 underline"
+                    >
+                      Clear Results
+                    </button>
+                  </div>
                 </div>
-                
-                <button 
-                  onClick={handleSearchTiles}
-                  disabled={isSearching}
-                  className="w-full bg-blue-600 text-white font-bold py-3 rounded-2xl shadow-lg shadow-blue-600/20 active:scale-95 transition-all uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 mb-4"
-                >
-                  {isSearching ? <RotateCcw className="animate-spin" size={14} /> : <Search size={14} />}
-                  {isSearching ? 'Searching Catalog...' : 'Find Tiles for Selected Area'}
-                </button>
 
-                {discoveredTiles.length > 0 && (
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-xl border border-white/5">
-                      <div>
-                        <p className="text-[10px] font-bold text-white uppercase tracking-widest">{discoveredTiles.length} Tiles Found</p>
-                        <p className="text-[8px] text-yellow-400 uppercase tracking-widest">{selectedTileIds.size} Selected</p>
-                      </div>
-                      <button 
-                        onClick={handleDownloadSelected}
-                        disabled={isDownloading || selectedTileIds.size === 0}
-                        className="bg-blue-600 text-white px-4 py-2 rounded-lg text-[9px] font-bold uppercase tracking-widest active:scale-95 disabled:opacity-30 transition-all flex items-center gap-2"
-                      >
-                        {isDownloading ? <RotateCcw size={12} className="animate-spin" /> : <Download size={12} />}
-                        Download Selected
-                      </button>
-                    </div>
-
-                    {isDownloading && progress > 0 && (
-                      <div className="bg-slate-900 rounded-full h-1.5 overflow-hidden border border-white/5">
-                        <div 
-                          className="bg-blue-500 h-full transition-all duration-300" 
-                          style={{ width: `${progress}%` }}
-                        />
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-2 no-scrollbar">
-                      {discoveredTiles.map(tile => {
-                        const isDownloaded = offlineGeoTiffs.some(t => t.id === tile.url);
-                        const isSelected = selectedTileIds.has(tile.id);
-                        return (
-                          <div 
-                            key={tile.id} 
-                            onClick={() => !isDownloaded && onToggleTileSelection(tile.id)}
-                            className={`flex justify-between items-center p-3 rounded-xl border transition-all cursor-pointer ${isDownloaded ? 'bg-emerald-600/5 border-emerald-500/20' : (isSelected ? 'bg-blue-600/10 border-blue-500/50' : 'bg-slate-900 border-white/5 hover:border-white/10')}`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className={`w-2 h-2 rounded-full ${isDownloaded ? 'bg-emerald-500' : (isSelected ? 'bg-blue-500' : 'bg-slate-700')}`} />
-                              <div>
-                                <p className="text-[10px] font-bold text-white">{tile.name}</p>
-                                <p className="text-[8px] text-yellow-400 uppercase tracking-widest">{tile.resolution}m Resolution</p>
-                              </div>
-                            </div>
-                            {isDownloaded ? (
-                              <span className="text-[8px] font-bold text-emerald-400 uppercase tracking-widest">Stored</span>
-                            ) : (
-                              <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-blue-600 border-blue-500' : 'border-white/10'}`}>
-                                {isSelected && <CheckCircle2 size={12} className="text-white" />}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                {isDownloading && progress > 0 && (
+                  <div className="bg-slate-900 rounded-full h-1.5 overflow-hidden border border-white/5">
+                    <div 
+                      className="bg-blue-500 h-full transition-all duration-300" 
+                      style={{ width: `${progress}%` }}
+                    />
                   </div>
                 )}
-              </div>
 
-              <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
-                <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-4">Stored GeoTIFFs ({offlineGeoTiffs.length})</h3>
-                {offlineGeoTiffs.length === 0 ? (
-                  <p className="text-yellow-400 text-[10px] text-center py-4 italic">No GeoTIFFs stored for offline use.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {offlineGeoTiffs.map(tiff => (
-                        <div key={tiff.id} className="bg-slate-900 border border-white/5 p-3 rounded-xl space-y-3">
-                          <div className="flex justify-between items-center">
-                            <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center">
-                                <FileText size={14} className="text-blue-400" />
-                              </div>
-                              <div>
-                                <p className="text-[10px] font-bold text-white">{tiff.name}</p>
-                                <p className="text-[8px] text-yellow-400 uppercase tracking-widest">{(tiff.blob.size / (1024 * 1024)).toFixed(1)} MB • {tiff.resolution}m</p>
-                              </div>
-                            </div>
-                            <div className="flex gap-2">
-                              <button 
-                                onClick={() => onZoomTo(tiff.id)}
-                                className="w-8 h-8 bg-slate-800 text-white rounded-lg flex items-center justify-center active:scale-90"
-                                title="Zoom to Tile"
-                              >
-                                <Maximize2 size={14} />
-                              </button>
-                              <button 
-                                onClick={() => onToggleOverlay(tiff.id)}
-                                disabled={isOverlayLoading[tiff.id]}
-                                className={`w-8 h-8 rounded-lg flex items-center justify-center active:scale-90 transition-colors ${activeOverlays[tiff.id] ? 'bg-emerald-600/20 text-emerald-400' : 'bg-slate-800 text-white'}`}
-                                title="Toggle Map Overlay"
-                              >
-                                {isOverlayLoading[tiff.id] ? <RotateCcw size={14} className="animate-spin" /> : <Layers size={14} />}
-                              </button>
-                              <button 
-                                onClick={() => onGeoTiffDelete(tiff.id)}
-                                className="w-8 h-8 bg-rose-600/20 text-rose-400 rounded-lg flex items-center justify-center active:scale-90"
-                              >
-                                <Trash2 size={14} />
-                              </button>
+                <div className="grid grid-cols-1 gap-2 max-h-64 overflow-y-auto pr-2 no-scrollbar">
+                  {Array.from(groupedTiles.entries()).map(([gridRef, tiles]) => {
+                    // Pick the best tile to represent the group (lowest resolution, highest phase)
+                    const bestTile = [...tiles].sort((a, b) => {
+                      if (a.resolution !== b.resolution) return a.resolution - b.resolution;
+                      return b.phase - a.phase;
+                    })[0];
+                    
+                    const selectedTile = tiles.find(t => selectedTileIds.has(t.id)) || bestTile;
+                    const isDownloaded = offlineGeoTiffs.some(t => t.id === selectedTile.url);
+                    const isSelected = selectedTileIds.has(selectedTile.id);
+                    const isExpanded = expandedGroups[gridRef] || false;
+                    
+                    return (
+                      <div key={gridRef} className="flex flex-col gap-1">
+                        <div 
+                          onClick={() => !isDownloaded && onToggleTileSelection(selectedTile.id)}
+                          className={`flex justify-between items-center p-3 rounded-xl border transition-all cursor-pointer ${isDownloaded ? 'bg-emerald-600/5 border-emerald-500/20' : (isSelected ? 'bg-blue-600/10 border-blue-500/50' : 'bg-slate-900 border-white/5 hover:border-white/10')}`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`w-2 h-2 rounded-full ${isDownloaded ? 'bg-emerald-500' : (isSelected ? 'bg-blue-500' : 'bg-slate-700')}`} />
+                            <div>
+                              <p className="text-[10px] font-bold text-white">{gridRef}</p>
+                              <p className="text-[8px] text-yellow-400 uppercase tracking-widest">
+                                {selectedTile.resolution}m • Ph{selectedTile.phase}
+                                {tiles.length > 1 && (
+                                  <span 
+                                    onClick={(e) => { 
+                                      e.stopPropagation(); 
+                                      setExpandedGroups(prev => ({ ...prev, [gridRef]: !isExpanded }));
+                                    }}
+                                    className="ml-2 text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                                  >
+                                    {isExpanded ? 'Hide' : `+${tiles.length - 1} options`}
+                                  </span>
+                                )}
+                              </p>
                             </div>
                           </div>
-
-                          {activeOverlays[tiff.id] && (
-                            <div className="bg-slate-950/50 p-2 rounded-lg border border-white/5">
-                              <div className="flex justify-between items-center mb-1">
-                                <span className="text-[7px] font-bold text-yellow-400 uppercase tracking-widest">Overlay Opacity</span>
-                                <span className="text-[7px] font-bold text-emerald-400">{Math.round((geoTiffOpacities[tiff.id] ?? 0.6) * 100)}%</span>
-                              </div>
-                              <input 
-                                type="range" 
-                                min="0" 
-                                max="1" 
-                                step="0.01" 
-                                value={geoTiffOpacities[tiff.id] ?? 0.6} 
-                                onChange={(e) => onGeoTiffOpacityChange(tiff.id, parseFloat(e.target.value))}
-                                className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-600"
-                              />
+                          {isDownloaded ? (
+                            <span className="text-[8px] font-bold text-emerald-400 uppercase tracking-widest">Stored</span>
+                          ) : (
+                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-blue-600 border-blue-500' : 'border-white/10'}`}>
+                              {isSelected && <CheckCircle2 size={12} className="text-white" />}
                             </div>
                           )}
                         </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
-                <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-4">Import Legacy Data</h3>
-                <label className="w-full bg-slate-900 border-2 border-dashed border-white/10 rounded-2xl py-8 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-blue-500/50 transition-colors">
-                  <Upload size={24} className="text-white" />
-                  <span className="text-[10px] font-bold text-yellow-400 uppercase tracking-widest">Drop .sgld or .tif files here</span>
-                  <input type="file" multiple accept=".sgld,.tif,.tiff" onChange={handleFileImport} className="hidden" />
-                </label>
-              </div>
-
-              {currentOffline && (
-                <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
-                  <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-4">Active Legacy Chunk</h3>
-                  <div className="bg-slate-900 border border-white/5 p-4 rounded-2xl">
-                    <p className="text-sm font-bold text-white mb-1">{currentOffline.courseName}</p>
-                    <p className="text-[9px] text-yellow-400 uppercase tracking-widest mb-4">{currentOffline.rows}x{currentOffline.cols} Grid • {currentOffline.resolution}m Res</p>
-                    <div className="flex gap-2">
-                      <div className="flex-1 bg-emerald-600/20 text-emerald-400 py-2 rounded-xl text-[9px] font-bold uppercase tracking-widest text-center">Active</div>
-                    </div>
-                  </div>
+                        
+                        {isExpanded && (
+                          <div className="ml-5 flex flex-col gap-1 border-l border-white/10 pl-3 py-1">
+                            {tiles.map(t => {
+                              const tDownloaded = offlineGeoTiffs.some(ot => ot.id === t.url);
+                              const tSelected = selectedTileIds.has(t.id);
+                              return (
+                                <div 
+                                  key={t.id}
+                                  onClick={() => !tDownloaded && onToggleTileSelection(t.id)}
+                                  className={`flex justify-between items-center p-2 rounded-lg border text-[8px] transition-all cursor-pointer ${tDownloaded ? 'bg-emerald-600/5 border-emerald-500/10 text-emerald-400' : (tSelected ? 'bg-blue-600/10 border-blue-500/30 text-blue-400' : 'bg-slate-900/50 border-white/5 text-slate-400 hover:border-white/10')}`}
+                                >
+                                  <span>{t.resolution}m • Phase {t.phase}</span>
+                                  {tDownloaded ? <span>Stored</span> : (tSelected ? <CheckCircle2 size={10} /> : <div className="w-3 h-3 rounded-full border border-white/10" />)}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              )}
-            </>
-          )}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
+            <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-4">Stored GeoTIFFs ({offlineGeoTiffs.length})</h3>
+            {offlineGeoTiffs.length === 0 ? (
+              <p className="text-yellow-400 text-[10px] text-center py-4 italic">No GeoTIFFs stored for offline use.</p>
+            ) : (
+              <div className="space-y-2">
+                {offlineGeoTiffs.map(tiff => (
+                    <div key={tiff.id} className="bg-slate-900 border border-white/5 p-3 rounded-xl space-y-3">
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center">
+                            <FileText size={14} className="text-blue-400" />
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold text-white">{tiff.name}</p>
+                            <p className="text-[8px] text-yellow-400 uppercase tracking-widest">{(tiff.blob.size / (1024 * 1024)).toFixed(1)} MB • {tiff.resolution}m</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={() => onZoomTo(tiff.id)}
+                            className="w-8 h-8 bg-slate-800 text-white rounded-lg flex items-center justify-center active:scale-90"
+                            title="Zoom to Tile"
+                          >
+                            <Maximize2 size={14} />
+                          </button>
+                          <button 
+                            onClick={() => onToggleOverlay(tiff.id)}
+                            disabled={isOverlayLoading[tiff.id]}
+                            className={`w-8 h-8 rounded-lg flex items-center justify-center active:scale-90 transition-colors ${activeOverlays[tiff.id] ? 'bg-emerald-600/20 text-emerald-400' : 'bg-slate-800 text-white'}`}
+                            title="Toggle Map Overlay"
+                          >
+                            {isOverlayLoading[tiff.id] ? <RotateCcw size={14} className="animate-spin" /> : <Layers size={14} />}
+                          </button>
+                          <button 
+                            onClick={() => handleExportTiff(tiff.id)}
+                            className="w-8 h-8 bg-blue-600/20 text-blue-400 rounded-lg flex items-center justify-center active:scale-90"
+                            title="Save to device"
+                          >
+                            <Download size={14} />
+                          </button>
+                          <button 
+                            onClick={() => onGeoTiffDelete(tiff.id)}
+                            className="w-8 h-8 bg-rose-600/20 text-rose-400 rounded-lg flex items-center justify-center active:scale-90"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {activeOverlays[tiff.id] && (
+                        <div className="bg-slate-950/50 p-2 rounded-lg border border-white/5">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-[7px] font-bold text-yellow-400 uppercase tracking-widest">Overlay Opacity</span>
+                            <span className="text-[7px] font-bold text-emerald-400">{Math.round((geoTiffOpacities[tiff.id] ?? 0.6) * 100)}%</span>
+                          </div>
+                          <input 
+                            type="range" 
+                            min="0" 
+                            max="1" 
+                            step="0.01" 
+                            value={geoTiffOpacities[tiff.id] ?? 0.6} 
+                            onChange={(e) => onGeoTiffOpacityChange(tiff.id, parseFloat(e.target.value))}
+                            className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-600"
+                          />
+                        </div>
+                      )}
+                    </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-slate-950 border border-white/5 rounded-3xl p-6">
+            <h3 className="text-xs font-bold text-white uppercase tracking-widest mb-4">Import GeoTIFF</h3>
+            <label className="w-full bg-slate-900 border-2 border-dashed border-white/10 rounded-2xl py-8 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-blue-500/50 transition-colors">
+              <Upload size={24} className="text-white" />
+              <span className="text-[10px] font-bold text-yellow-400 uppercase tracking-widest">Drop .tif or .tiff files here</span>
+              <input type="file" multiple accept=".tif,.tiff" onChange={handleFileImport} className="hidden" />
+            </label>
+          </div>
         </div>
 
         {error && (
@@ -2102,6 +2245,10 @@ const App: React.FC = () => {
   const [geoTiffOpacities, setGeoTiffOpacities] = useState<Record<string, number>>({});
   const [isOverlayLoading, setIsOverlayLoading] = useState<Record<string, boolean>>({});
   const [isPlanningSession, setIsPlanningSession] = useState(false);
+  const [activeLidarLayers, setActiveLidarLayers] = useState<string>('scotland:lidar-dem-viridis');
+  const [activeLidarStyles, setActiveLidarStyles] = useState<string>('');
+  const [activeCoverageId, setActiveCoverageId] = useState<string | null>(null);
+  const [planningPivots, setPlanningPivots] = useState<PivotRecord[]>([]);
 
   React.useEffect(() => {
     if (mapStyle === 'LiDAR DTM') {
@@ -2118,13 +2265,26 @@ const App: React.FC = () => {
   const [reportFileName, setReportFileName] = useState("");
   const [planningReportTracks, setPlanningReportTracks] = useState<SavedRecord[]>([]);
   const [planningReportFileName, setPlanningReportFileName] = useState("");
-  const [offlineLidarChunks, setOfflineLidarChunks] = useState<OfflineLidarData[]>([]);
   const [offlineGeoTiffs, setOfflineGeoTiffs] = useState<OfflineGeoTiff[]>([]);
-  const [activeGeoTiffOverlays, setActiveGeoTiffOverlays] = useState<Record<string, { dataUrl: string; bounds: [[number, number], [number, number]] }>>({});
+  const [activeGeoTiffOverlays, setActiveGeoTiffOverlays] = useState<Record<string, { dataUrl: string; bounds: [[number, number], [number, number]]; timestamp?: number }>>({});
+  const activeLidarOverlay = useMemo(() => {
+    const keys = Object.keys(activeGeoTiffOverlays);
+    if (keys.length === 0) return null;
+    const id = keys[0];
+    return { id, ...activeGeoTiffOverlays[id] };
+  }, [activeGeoTiffOverlays]);
   const [showTerrainManager, setShowTerrainManager] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectionBounds, setSelectionBounds] = useState<L.LatLngBounds | null>(null);
   const [discoveredTiles, setDiscoveredTiles] = useState<LidarTile[]>([]);
+  const groupedDiscoveredTiles = useMemo(() => {
+    const groups = new Map<string, LidarTile[]>();
+    discoveredTiles.forEach(tile => {
+      const existing = groups.get(tile.gridRef) || [];
+      groups.set(tile.gridRef, [...existing, tile]);
+    });
+    return groups;
+  }, [discoveredTiles]);
   const [selectedTileIds, setSelectedTileIds] = useState<Set<string>>(new Set());
   const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
   const CONCAVITY_FIXED = 0.82;
@@ -2176,41 +2336,6 @@ const App: React.FC = () => {
       }
     } catch (e) {
       console.error('[LiDAR] Failed to query offline GeoTIFF', e);
-    }
-
-    // 2. Check Offline Binary Chunks (.sgld)
-    for (const chunk of offlineLidarChunks) {
-      if (lat >= chunk.minLat && lat <= chunk.maxLat && lng >= chunk.minLng && lng <= chunk.maxLng) {
-        const row = Math.floor(((chunk.maxLat - lat) / (chunk.maxLat - chunk.minLat)) * (chunk.rows - 1));
-        const col = Math.floor(((lng - chunk.minLng) / (chunk.maxLng - chunk.minLng)) * (chunk.cols - 1));
-        const index = row * chunk.cols + col;
-        
-        // 1. Check memory grid first (fastest)
-        if (chunk.grid) {
-          const val = chunk.grid[index];
-          if (val !== null && val !== undefined && !isNaN(val as number)) {
-            console.log(`[LiDAR] Using OFFLINE Binary Chunk for ${lat}, ${lng}: ${val}m`);
-            setLidarStatus(prev => prev === 'geotiff' ? prev : 'offline');
-            return val as number;
-          }
-        } 
-        // 2. Fallback to on-demand blob reading (memory efficient)
-        else if (chunk.blob && chunk.headerOffset !== undefined) {
-          try {
-            const offset = chunk.headerOffset + (index * 4);
-            const slice = chunk.blob.slice(offset, offset + 4);
-            const buffer = await slice.arrayBuffer();
-            const val = new Float32Array(buffer)[0];
-            if (!isNaN(val)) {
-              console.log(`[LiDAR] Using OFFLINE Binary Blob for ${lat}, ${lng}: ${val}m`);
-              setLidarStatus(prev => prev === 'geotiff' ? prev : 'offline');
-              return val;
-            }
-          } catch (e) {
-            console.error('[LiDAR] Failed to read elevation from blob', e);
-          }
-        }
-      }
     }
 
     const fetchId = Date.now();
@@ -2272,28 +2397,54 @@ const App: React.FC = () => {
   const viewRef = useRef<AppView>(view);
   useEffect(() => { viewRef.current = view; }, [view]);
 
-  // Automatically activate GeoTIFF overlays in LiDAR DTM mode
+  // Automatically activate GeoTIFF overlays in LiDAR DTM mode and sync color range
   const loadingOverlays = useRef<Set<string>>(new Set());
+  const prevMapStyle = useRef(mapStyle);
   useEffect(() => {
-    if (mapStyle === 'LiDAR DTM' && offlineGeoTiffs.length > 0) {
-      offlineGeoTiffs.forEach(async (tiff) => {
-        if (!activeGeoTiffOverlays[tiff.id] && !loadingOverlays.current.has(tiff.id)) {
-          loadingOverlays.current.add(tiff.id);
+    const syncOverlays = async () => {
+      if (mapStyle === 'LiDAR DTM' && offlineGeoTiffs.length > 0) {
+        console.log(`[LiDAR] Map style is LiDAR DTM, syncing ${offlineGeoTiffs.length} offline overlays`);
+        
+        // 1. Calculate global range for all offline tiles to ensure consistent color rendering
+        let globalMin = Infinity;
+        let globalMax = -Infinity;
+        let found = false;
+        
+        for (const tiff of offlineGeoTiffs) {
+          const stats = await lidarGeoTiffService.getMinMax(tiff.id);
+          if (stats) {
+            globalMin = Math.min(globalMin, stats.min);
+            globalMax = Math.max(globalMax, stats.max);
+            found = true;
+          }
+        }
+        
+        if (found) {
+          lidarGeoTiffService.setGlobalAltitudeRange(globalMin, globalMax);
+        }
+
+        // 2. Generate/Update overlays for all offline tiles
+        const newOverlays: Record<string, any> = {};
+        for (const tiff of offlineGeoTiffs) {
           try {
             const overlay = await lidarGeoTiffService.generateOverlay(tiff.id);
             if (overlay) {
-              setActiveGeoTiffOverlays(prev => ({
-                ...prev,
-                [tiff.id]: overlay
-              }));
+              newOverlays[tiff.id] = overlay;
             }
-          } finally {
-            loadingOverlays.current.delete(tiff.id);
+          } catch (err) {
+            console.error(`[LiDAR] Failed to generate overlay for ${tiff.id}`, err);
           }
         }
-      });
-    }
-  }, [mapStyle, offlineGeoTiffs, activeGeoTiffOverlays]);
+        setActiveGeoTiffOverlays(newOverlays);
+      } else if (prevMapStyle.current === 'LiDAR DTM' && mapStyle !== 'LiDAR DTM') {
+        // Deactivate overlays ONLY if we just switched away from LiDAR DTM
+        setActiveGeoTiffOverlays({});
+        loadingOverlays.current.clear();
+      }
+      prevMapStyle.current = mapStyle;
+    };
+    syncOverlays();
+  }, [mapStyle, offlineGeoTiffs]);
 
   const handleToggleTileSelection = (tileId: string) => {
     setSelectedTileIds(prev => {
@@ -2305,6 +2456,7 @@ const App: React.FC = () => {
   };
 
   const handleToggleGeoTiffOverlay = async (id: string) => {
+    console.log(`[LiDAR] Toggling GeoTIFF overlay ${id}. Currently active: ${!!activeGeoTiffOverlays[id]}`);
     if (activeGeoTiffOverlays[id]) {
       setActiveGeoTiffOverlays(prev => {
         const next = { ...prev };
@@ -2314,8 +2466,10 @@ const App: React.FC = () => {
     } else {
       setIsOverlayLoading(prev => ({ ...prev, [id]: true }));
       try {
+        console.log(`[LiDAR] Generating overlay for ${id}...`);
         const overlay = await lidarGeoTiffService.generateOverlay(id);
         if (overlay) {
+          console.log(`[LiDAR] Overlay generated for ${id}, updating state`);
           // Disable following so the map doesn't snap back
           setIsFollowing(false);
           
@@ -2329,6 +2483,7 @@ const App: React.FC = () => {
             mapInstance.fitBounds(overlay.bounds, { padding: [50, 50] });
           }
         } else {
+          console.log(`[LiDAR] Overlay generation failed for ${id}, showing border only`);
           // If overlay generation failed (e.g. no data), we can still show the border if we have bounds
           const tiff = offlineGeoTiffs.find(t => t.id === id);
           if (tiff) {
@@ -2347,7 +2502,7 @@ const App: React.FC = () => {
           }
         }
       } catch (err) {
-        console.error('Failed to generate overlay', err);
+        console.error('[LiDAR] Failed to generate overlay', err);
       } finally {
         setIsOverlayLoading(prev => ({ ...prev, [id]: false }));
       }
@@ -2378,8 +2533,8 @@ const App: React.FC = () => {
 
     const handleUpdate = (p: GeolocationPosition) => {
       setPos(prev => {
-        // CRITICAL: If we are not following, do not let GNSS background updates overwrite manual/planning position
-        if (!isFollowing && prev) return prev;
+        // CRITICAL: If we are not following, or in a planning session, do not let GNSS background updates overwrite manual/planning position
+        if ((!isFollowing || isPlanningSession) && prev) return prev;
 
         const newPos: GeoPoint = { 
           lat: p.coords.latitude, 
@@ -2509,36 +2664,33 @@ const App: React.FC = () => {
   useEffect(() => {
     if (trkActive && pos) {
       setTrkPoints(prev => {
-        // Update any points in the track that lack altitude if the current pos has it and is nearby
-        // This is crucial for LiDAR where the fetch might finish after points are recorded
-        let changed = false;
-        const updated = prev.map(p => {
-          if (p.alt === null && pos.alt !== null) {
-            const d = L.latLng(p.lat, p.lng).distanceTo(L.latLng(pos.lat, pos.lng));
-            if (d < 10) {
-              changed = true;
-              return { ...p, alt: pos.alt, altAccuracy: pos.altAccuracy, source: pos.source };
-            }
-          }
-          return p;
-        });
-
         if (prev.length === 0) return [pos];
         
-        if (changed) return updated;
-
         const last = prev[prev.length - 1];
         const dist = L.latLng(last.lat, last.lng).distanceTo(L.latLng(pos.lat, pos.lng));
         
-        // Record path in both modes if tracking is active
-        // For manual mode, we record as the user pans
-        // For following mode, we record as the user walks
-        // In planning mode, we only record manually via the Record button
+        // Only update the last few points if they lack altitude
+        // Iterating over the entire history on every GPS tick is too expensive
+        let changed = false;
+        const lookback = Math.min(prev.length, 5);
+        const updated = [...prev];
+        
+        for (let i = prev.length - 1; i >= prev.length - lookback; i--) {
+          const p = updated[i];
+          if (p.alt === null && pos.alt !== null) {
+            const d = L.latLng(p.lat, p.lng).distanceTo(L.latLng(pos.lat, pos.lng));
+            if (d < 10) {
+              updated[i] = { ...p, alt: pos.alt, altAccuracy: pos.altAccuracy, source: pos.source };
+              changed = true;
+            }
+          }
+        }
+
         if (dist > 2 && !isPlanningSession) {
-          return [...prev, pos];
+          return [...updated, pos];
         }
         
-        return prev;
+        return changed ? updated : prev;
       });
     }
   }, [pos, trkActive, isFollowing]);
@@ -2695,28 +2847,22 @@ const App: React.FC = () => {
 
     if (currentRaterPath.length < 2) return { distRater: 0, elevRater: 0, distScratch: 0, elevScratch: 0, distBogey: 0, elevBogey: 0, effectivePaths: { scratch: [], bogey: [] }, sectorScratch: null, sectorBogey: null };
     
-    // For Course Planning, we use the recorded path directly
-    if (isPlanningSession) {
-      const calculated = calculateEffectivePathsAndMetrics(currentRaterPath, currentPivots, distMult, elevMult);
-      const raterPathMetrics = calculatePathDistanceAndElevation(currentRaterPath, distMult, elevMult);
-      return { 
-        distRater: raterPathMetrics.distance, 
-        elevRater: raterPathMetrics.elevation, 
-        distScratch: calculated.effectiveDistances.scratch, 
-        elevScratch: calculated.effectiveElevations.scratch, 
-        distBogey: calculated.effectiveDistances.bogey, 
-        elevBogey: calculated.effectiveElevations.bogey, 
-        effectivePaths: calculated.effectivePaths, 
-        effectiveAnchors: calculated.effectiveAnchors,
-        sectorScratch, 
-        sectorBogey 
-      };
-    }
-    
-    const calculated = calculateEffectivePathsAndMetrics(currentRaterPath, currentPivots, distMult, elevMult);
+    const calculated = calculateEffectivePathsAndMetrics(currentRaterPath, pivs, distMult, elevMult);
     const raterPathMetrics = calculatePathDistanceAndElevation(currentRaterPath, distMult, elevMult);
-    return { distRater: raterPathMetrics.distance, elevRater: raterPathMetrics.elevation, distScratch: calculated.effectiveDistances.scratch, elevScratch: calculated.effectiveElevations.scratch, distBogey: calculated.effectiveDistances.bogey, elevBogey: calculated.effectiveElevations.bogey, effectivePaths: calculated.effectivePaths, effectiveAnchors: calculated.effectiveAnchors, sectorScratch, sectorBogey };
-  }, [trkPoints, currentPivots, trkActive, pos, viewingRecord, distMult, elevMult]);
+    
+    return { 
+      distRater: raterPathMetrics.distance, 
+      elevRater: raterPathMetrics.elevation, 
+      distScratch: calculated.effectiveDistances.scratch, 
+      elevScratch: calculated.effectiveElevations.scratch, 
+      distBogey: calculated.effectiveDistances.bogey, 
+      elevBogey: calculated.effectiveElevations.bogey, 
+      effectivePaths: calculated.effectivePaths, 
+      effectiveAnchors: calculated.effectiveAnchors,
+      sectorScratch, 
+      sectorBogey 
+    };
+  }, [trkPoints, currentPivots, trkActive, pos, viewingRecord, distMult, elevMult, isPlanningSession]);
 
   const pathsDiffer = useMemo(() => {
     const s = effectiveMetrics.effectivePaths?.scratch || [];
@@ -2883,6 +3029,11 @@ const App: React.FC = () => {
       if (tracks.length > 0) {
         tracks.sort((a, b) => (a.holeNumber || 999) - (b.holeNumber || 999));
         setPlanningReportTracks(tracks);
+        setHistory(h => {
+          const updated = [...tracks, ...h];
+          localStorage.setItem('scottish_golf_rating_toolkit_final', JSON.stringify(updated));
+          return updated;
+        });
         setView('planning_report');
       }
     };
@@ -2940,6 +3091,11 @@ const App: React.FC = () => {
         // Sort by hole number (1 to 18)
         greens.sort((a, b) => (a.holeNumber || 999) - (b.holeNumber || 999));
         setReportGreens(greens);
+        setHistory(h => {
+          const updated = [...greens, ...h];
+          localStorage.setItem('scottish_golf_rating_toolkit_final', JSON.stringify(updated));
+          return updated;
+        });
         setView('report');
       }
     };
@@ -3068,24 +3224,40 @@ const App: React.FC = () => {
           fileName={planningReportFileName} 
           onClose={() => setView('landing')} 
           units={units} 
-          offlineLidarChunks={offlineLidarChunks} 
         />
       ) : view === 'wcs' ? (
-        <WCSAnalyzer onBack={() => setView('landing')} />
+        <WCSAnalyzer 
+          onBack={() => setView('landing')} 
+          onSelectCoverage={(id) => {
+            setActiveLidarLayers(id);
+            // If it's a single layer, we might need a different style or just use the same viridis style
+            // For simplicity, let's assume the viridis style works for all or just use default
+            setActiveLidarStyles('scotland:lidar-dem-viridis'); 
+            setMapStyle('LiDAR DTM');
+            setView('landing');
+          }}
+        />
       ) : view === 'planning' ? (
         <CoursePlanning 
           onClose={() => { setIsPlanningSession(false); setView('landing'); }} 
-          onSelect={(lat, lng) => {
-            setIsPlanningSession(true);
-            setIsFollowing(true);
-            setMapLockKey(k => k + 1);
-            setMapStyle('LiDAR DTM');
-            setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
-            setPos({ lat, lng, accuracy: 0.5, timestamp: Date.now(), alt: null, altAccuracy: null, source: 'Manual' });
-            setView('track');
-          }} 
-        />
-      ) : (
+      onSelect={async (lat, lng, name) => {
+        setIsPlanningSession(true);
+        setIsFollowing(true);
+        setMapLockKey(k => k + 1);
+        setMapStyle('LiDAR DTM');
+        setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
+        setPos({ lat, lng, accuracy: 0.5, timestamp: Date.now(), alt: null, altAccuracy: null, source: 'Manual' });
+        
+        // Clear unsaved GeoTIFFs when switching courses
+        await lidarGeoTiffService.clearUnsaved();
+        const tiffs = await lidarGeoTiffService.loadAll();
+        setOfflineGeoTiffs(tiffs);
+        setActiveGeoTiffOverlays({});
+        
+        setView('track');
+      }} 
+    />
+  ) : (
         <div className="flex-1 flex flex-col relative animate-in slide-in-from-right duration-300">
           <div className="absolute top-0 left-0 right-0 z-[1000] p-4 flex justify-between pointer-events-none">
           <button onClick={() => { 
@@ -3138,10 +3310,10 @@ const App: React.FC = () => {
                 />
                 {mapStyle === 'LiDAR DTM' && (
                   <WMSTileLayer
-                    key="lidar-layer"
+                    key={`lidar-layer-${activeLidarLayers}`}
                     url="https://srsp-ows.jncc.gov.uk/ows"
-                    layers="scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm"
-                    styles="scotland:lidar-dem-viridis,scotland:lidar-dem-viridis,scotland:lidar-dem-viridis,scotland:lidar-dem-viridis,scotland:lidar-dem-viridis,scotland:lidar-dem-viridis"
+                    layers={activeLidarLayers}
+                    styles={activeLidarStyles}
                     format="image/png"
                     transparent={true}
                     version="1.3.0"
@@ -3179,30 +3351,38 @@ const App: React.FC = () => {
                     pathOptions={{ color: '#10b981', weight: 2, fillOpacity: 0.1 }} 
                   />
                 )}
-                {discoveredTiles.map(tile => {
-                  const isSelected = selectedTileIds.has(tile.id);
-                  const isDownloaded = offlineGeoTiffs.some(t => t.id === tile.url);
+                {Array.from(groupedDiscoveredTiles.entries()).map(([gridRef, tiles]) => {
+                  // Pick the best tile to represent the group (lowest resolution, highest phase)
+                  const bestTile = [...tiles].sort((a, b) => {
+                    if (a.resolution !== b.resolution) return a.resolution - b.resolution;
+                    return b.phase - a.phase;
+                  })[0];
+                  
+                  const isAnySelected = tiles.some(t => selectedTileIds.has(t.id));
+                  const isAnyDownloaded = tiles.some(t => offlineGeoTiffs.some(ot => ot.id === t.url));
+                  const selectedTile = tiles.find(t => selectedTileIds.has(t.id)) || bestTile;
+
                   return (
-                    <React.Fragment key={`discovered-${tile.id}`}>
+                    <React.Fragment key={`discovered-group-${gridRef}`}>
                       <Rectangle 
-                        bounds={[[tile.bounds.minLat, tile.bounds.minLng], [tile.bounds.maxLat, tile.bounds.maxLng]]}
+                        bounds={[[bestTile.bounds.minLat, bestTile.bounds.minLng], [bestTile.bounds.maxLat, bestTile.bounds.maxLng]]}
                         eventHandlers={{
-                          click: () => !isDownloaded && handleToggleTileSelection(tile.id)
+                          click: () => !isAnyDownloaded && handleToggleTileSelection(selectedTile.id)
                         }}
                         pathOptions={{
-                          color: isDownloaded ? '#10b981' : (isSelected ? '#3b82f6' : '#facc15'),
-                          weight: isSelected ? 3 : 2,
+                          color: isAnyDownloaded ? '#10b981' : (isAnySelected ? '#3b82f6' : '#facc15'),
+                          weight: isAnySelected ? 3 : 2,
                           fill: true,
-                          fillOpacity: 0,
-                          dashArray: '5, 5'
+                          fillOpacity: 0.05,
+                          dashArray: isAnySelected ? '' : '5, 5'
                         }}
                       />
                       <Marker 
-                        key={`marker-${tile.id}`}
-                        position={[tile.bounds.maxLat, tile.bounds.minLng]} 
+                        key={`marker-group-${gridRef}`}
+                        position={[bestTile.bounds.maxLat, bestTile.bounds.minLng]} 
                         icon={L.divIcon({ 
                           className: 'bg-transparent border-none', 
-                          html: `<div class="text-[7px] font-bold text-white bg-black/60 px-1 rounded whitespace-nowrap border border-white/20" style="transform: translate(2px, 2px)">${tile.id.split('_').pop()}<br/>${tile.resolution}m</div>`,
+                          html: `<div class="text-[7px] font-bold text-white bg-black/60 px-1 rounded whitespace-nowrap border border-white/20" style="transform: translate(2px, 2px)">${gridRef}<br/>${selectedTile.resolution}m</div>`,
                           iconSize: [0, 0]
                         })}
                         interactive={false}
@@ -3213,14 +3393,14 @@ const App: React.FC = () => {
                 {Object.entries(activeGeoTiffOverlays).map(([id, overlay]) => (
                   <React.Fragment key={`overlay-${id}`}>
                     {overlay.dataUrl && (
-                      <ImageOverlay
-                        key={`img-${id}-${overlay.dataUrl.substring(0, 32)}`}
-                        url={overlay.dataUrl}
-                        bounds={overlay.bounds}
-                        opacity={geoTiffOpacities[id] ?? 0.6}
-                        zIndex={900}
-                        pane="overlayPane"
-                      />
+                    <ImageOverlay
+                      key={`img-${id}-${(overlay as any).timestamp || 'initial'}`}
+                      url={overlay.dataUrl}
+                      bounds={overlay.bounds}
+                      opacity={geoTiffOpacities[id] ?? 0.6}
+                      zIndex={1000}
+                      pane="overlayPane"
+                    />
                     )}
                     <Rectangle 
                       key={`rect-${id}`}
@@ -3242,17 +3422,18 @@ const App: React.FC = () => {
                   mapPoints={mapPoints} 
                   completed={mapCompleted} 
                   viewingRecord={viewingRecord} 
-                  mode={view} 
+                  mode={view === 'green' ? 'green' : 'track'} 
                   trkPoints={trkPoints} 
                   isFollowing={isFollowing} 
                   setIsFollowing={setIsFollowing}
                   onMapMove={(lat, lng) => setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null })}
                   onZoomChange={setCurrentZoom}
+                  activeLidarOverlay={activeLidarOverlay}
                 />
 
                 <AccuracyOvals 
                   pos={pos} 
-                  pivots={isPlanningSession ? trkPoints.slice(1).map(p => ({ point: p, type: 'common' })) : currentPivots} 
+                  pivots={isPlanningSession ? planningPivots : currentPivots} 
                   startPoint={trkPoints.length > 0 ? trkPoints[0] : null} 
                   gender={ratingGender} 
                   active={view === 'track' && trkActive} 
@@ -3794,17 +3975,44 @@ const App: React.FC = () => {
       {showTerrainManager && (
         <TerrainManager 
           map={mapInstance} 
-          onClose={() => {
+          onClose={async () => {
             setShowTerrainManager(false);
             setSelectionMode(false);
+            setSelectionBounds(null);
+
+            // Calculate global min/max altitude for all loaded tiles to normalize color shading
+            if (offlineGeoTiffs.length > 0) {
+              let globalMin = Infinity;
+              let globalMax = -Infinity;
+              let found = false;
+
+              for (const tiff of offlineGeoTiffs) {
+                const stats = await lidarGeoTiffService.getMinMax(tiff.id);
+                if (stats) {
+                  globalMin = Math.min(globalMin, stats.min);
+                  globalMax = Math.max(globalMax, stats.max);
+                  found = true;
+                }
+              }
+
+              if (found) {
+                lidarGeoTiffService.setGlobalAltitudeRange(globalMin, globalMax);
+                
+                // Re-generate active overlays to apply the new consistent range
+                const currentActive = { ...activeGeoTiffOverlays };
+                const activeIds = Object.keys(currentActive);
+                if (activeIds.length > 0) {
+                  for (const id of activeIds) {
+                    const overlay = await lidarGeoTiffService.generateOverlay(id);
+                    if (overlay) {
+                      currentActive[id] = overlay;
+                    }
+                  }
+                  setActiveGeoTiffOverlays(currentActive);
+                }
+              }
+            }
           }} 
-          onDownload={(data) => {
-            setOfflineLidarChunks(prev => [...prev, data]);
-          }}
-          currentOffline={offlineLidarChunks.length > 0 ? offlineLidarChunks[0] : null}
-          onLoad={(data) => {
-            setOfflineLidarChunks(prev => [...prev, data]);
-          }}
           onDrawMode={() => {
             setSelectionMode(true);
             setShowTerrainManager(false);
@@ -3841,6 +4049,7 @@ const App: React.FC = () => {
           selectedTileIds={selectedTileIds}
           onToggleTileSelection={handleToggleTileSelection}
           onClearSelection={() => setSelectionBounds(null)}
+          onSetSelection={setSelectedTileIds}
         />
       )}
       <style>{`.leaflet-tile-pane { filter: brightness(0.8) contrast(1.1) saturate(0.85); }.no-scrollbar::-webkit-scrollbar { display: none; }.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>

@@ -15,12 +15,14 @@ interface WCSCapabilities {
 
 interface WCSAnalyzerProps {
   onBack: () => void;
+  onSelectCoverage?: (coverageId: string) => void;
 }
 
-export const WCSAnalyzer: React.FC<WCSAnalyzerProps> = ({ onBack }) => {
+export const WCSAnalyzer: React.FC<WCSAnalyzerProps> = ({ onBack, onSelectCoverage }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<WCSCapabilities | null>(null);
+  const [activeCoverageId, setActiveCoverageId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchCapabilities = async () => {
@@ -186,15 +188,28 @@ export const WCSAnalyzer: React.FC<WCSAnalyzerProps> = ({ onBack }) => {
           </div>
           <div className="space-y-3">
             {capabilities?.coverages.map((cov, i) => (
-              <div key={i} className="p-4 bg-black/40 rounded-xl border border-white/5">
-                <p className="text-sm font-bold text-blue-400 mb-1">{cov.id}</p>
-                <div className="flex flex-wrap gap-2">
-                  {cov.subtypes.map((st, j) => (
-                    <span key={j} className="text-[10px] bg-white/5 px-2 py-0.5 rounded text-white/60">
-                      {st}
-                    </span>
-                  ))}
+              <div key={i} className="p-4 bg-black/40 rounded-xl border border-white/5 flex justify-between items-start gap-4">
+                <div className="flex-1">
+                  <p className="text-sm font-bold text-blue-400 mb-1">{cov.id}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {cov.subtypes.map((st, j) => (
+                      <span key={j} className="text-[10px] bg-white/5 px-2 py-0.5 rounded text-white/60">
+                        {st}
+                      </span>
+                    ))}
+                  </div>
                 </div>
+                {onSelectCoverage && (
+                  <button 
+                    onClick={() => {
+                      setActiveCoverageId(cov.id);
+                      onSelectCoverage(cov.id);
+                    }}
+                    className={`shrink-0 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all ${activeCoverageId === cov.id ? 'bg-emerald-600 text-white' : 'bg-blue-600/20 text-blue-400 hover:bg-blue-600/40'}`}
+                  >
+                    {activeCoverageId === cov.id ? 'Active' : 'View on Map'}
+                  </button>
+                )}
               </div>
             ))}
           </div>

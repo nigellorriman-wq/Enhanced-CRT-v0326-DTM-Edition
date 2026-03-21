@@ -15,14 +15,14 @@ import {
   Label,
   ReferenceLine
 } from 'recharts';
-import { SavedRecord, GeoPoint, UnitSystem, calculateDistance, OfflineLidarData } from '../App';
+import { SavedRecord, GeoPoint, UnitSystem, calculateDistance } from '../App';
+import { lidarGeoTiffService } from '../services/lidarGeoTiffService';
 
 interface PlanningReportViewProps {
   tracks: SavedRecord[];
   fileName: string;
   onClose: () => void;
   units: UnitSystem;
-  offlineLidarChunks?: OfflineLidarData[];
 }
 
 interface ProfilePoint {
@@ -35,7 +35,7 @@ interface ProfilePoint {
   isPivot?: boolean;
 }
 
-export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, fileName, onClose, units, offlineLidarChunks = [] }) => {
+export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, fileName, onClose, units }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [reportUnits, setReportUnits] = useState<UnitSystem>(units);
   const [isExporting, setIsExporting] = useState(false);
@@ -53,31 +53,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   const currentTrack = tracks[currentIndex];
 
   const fetchLidar = async (lat: number, lng: number): Promise<number | null> => {
-    // Check offline data first
-    for (const chunk of offlineLidarChunks) {
-      if (lat >= chunk.minLat && lat <= chunk.maxLat && lng >= chunk.minLng && lng <= chunk.maxLng) {
-        const row = Math.floor(((chunk.maxLat - lat) / (chunk.maxLat - chunk.minLat)) * (chunk.rows - 1));
-        const col = Math.floor(((lng - chunk.minLng) / (chunk.maxLng - chunk.minLng)) * (chunk.cols - 1));
-        const index = row * chunk.cols + col;
-        
-        // 1. Check memory grid first
-        if (chunk.grid) {
-          const val = chunk.grid[index];
-          if (val !== null && val !== undefined && !isNaN(val as number)) return val as number;
-        }
-        // 2. Check blob on-demand
-        else if (chunk.blob && chunk.headerOffset !== undefined) {
-          try {
-            const offset = chunk.headerOffset + (index * 4);
-            const slice = chunk.blob.slice(offset, offset + 4);
-            const buffer = await slice.arrayBuffer();
-            const val = new Float32Array(buffer)[0];
-            if (!isNaN(val)) return val;
-          } catch (e) {
-            console.error('Failed to read elevation from blob in report', e);
-          }
-        }
-      }
+    // Check offline GeoTIFF data first
+    try {
+      const offlineElev = await lidarGeoTiffService.getElevation(lat, lng);
+      if (offlineElev !== null) return offlineElev;
+    } catch (e) {
+      console.error('Failed to read elevation from GeoTIFF in report', e);
     }
 
     try {
@@ -99,6 +80,9 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     if (profiles[record.id]) return;
 
     setIsLoadingLidar(true);
+    
+    // Ensure GeoTIFFs are loaded into memory for fast lookup
+    await lidarGeoTiffService.loadAll();
     
     const getAnchors = (forScratch: boolean): GeoPoint[] => {
       const startPoint = record.raterPathPoints?.[0] || record.points[0];
@@ -126,7 +110,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
         const p1 = anchors[i];
         const p2 = anchors[i+1];
         const segmentDist = calculateDistance(p1, p2);
-        const interval = 5; // 5m interval
+        
+        // Determine interval based on GeoTIFF availability
+        // If we have offline data, we can afford a higher resolution (1m)
+        const isOffline = lidarGeoTiffService.isAreaDownloaded(p1.lat, p1.lng);
+        const interval = isOffline ? 1 : 5;
+        
         const numSteps = Math.max(1, Math.floor(segmentDist / interval));
 
         for (let step = 0; step <= numSteps; step++) {
@@ -399,7 +388,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
               <Loader2 className="animate-spin text-amber-600 mb-4" size={48} />
               <p className="text-slate-900 font-bold uppercase tracking-widest text-sm">Fetching LiDAR Terrain Data...</p>
-              <p className="text-slate-900 text-xs mt-2">Sampling path at 5m intervals</p>
+              <p className="text-slate-900 text-xs mt-2">Sampling path at {lidarGeoTiffService.isAreaDownloaded(currentTrack?.points[0]?.lat || 0, currentTrack?.points[0]?.lng || 0) ? '1m' : '5m'} intervals</p>
             </div>
           )}
 
@@ -410,8 +399,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 <span className="text-[10px] font-bold text-amber-600 uppercase tracking-[0.3em]">Planning Report Tool</span>
               </div>
               <div className="mt-1.5 flex items-center gap-3">
-                <span className="text-[7px] font-bold text-slate-900 uppercase tracking-widest">LiDAR Source: {offlineLidarChunks.length > 0 ? `Offline Cache (${offlineLidarChunks[0].courseName}${offlineLidarChunks.length > 1 ? ` + ${offlineLidarChunks.length - 1} chunks` : ''})` : 'Scottish Government LiDAR (Phase 1-6)'}</span>
-                {offlineLidarChunks.length === 0 && <span className="text-[7px] font-medium text-blue-500 underline">https://remotesensingdata.gov.scot/</span>}
+                <span className="text-[7px] font-bold text-slate-900 uppercase tracking-widest">LiDAR Source: {lidarGeoTiffService.isAreaDownloaded(currentTrack?.points[0]?.lat || 0, currentTrack?.points[0]?.lng || 0) ? 'Offline GeoTIFF Cache' : 'Scottish Government LiDAR (Phase 1-6)'}</span>
+                {!lidarGeoTiffService.isAreaDownloaded(currentTrack?.points[0]?.lat || 0, currentTrack?.points[0]?.lng || 0) && <span className="text-[7px] font-medium text-blue-500 underline">https://remotesensingdata.gov.scot/</span>}
               </div>
             </div>
             <div className="flex flex-col items-end text-right">

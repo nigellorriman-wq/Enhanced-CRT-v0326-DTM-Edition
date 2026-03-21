@@ -9,6 +9,30 @@ console.log('Starting Express server...');
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function extractElevationFromWmsResponse(data: any): number | null {
+  if (!data || !data.features || !Array.isArray(data.features) || data.features.length === 0) {
+    return null;
+  }
+  
+  for (const feature of data.features) {
+    const props = feature.properties;
+    if (!props) continue;
+    
+    // Log properties for debugging if we're having trouble finding elevation
+    // console.log('[LiDAR API] Feature properties:', JSON.stringify(props));
+    
+    for (const key in props) {
+      const val = parseFloat(props[key]);
+      // Valid elevation range for Scotland (-50 to 5000m)
+      // Exclude common "no data" values like -9999
+      if (!isNaN(val) && val > -50 && val < 5000 && val !== -9999) {
+        return val;
+      }
+    }
+  }
+  return null;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -29,80 +53,90 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing lat/lng' });
       }
 
-      const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
-      
-      // Use WMS GetFeatureInfo on the same layers used for the map overlay
-      const params = new URLSearchParams();
-      params.append('service', 'WMS');
-      params.append('version', '1.1.1');
-      params.append('request', 'GetFeatureInfo');
-      // Query all phases to ensure coverage
-      const layers = 'scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
-      params.append('layers', layers);
-      params.append('query_layers', layers);
-      params.append('x', '50');
-      params.append('y', '50');
-      params.append('width', '101');
-      params.append('height', '101');
-      params.append('srs', 'EPSG:4326');
-      
-      // Slightly larger delta for better reliability at high zoom
-      const delta = 0.0005; 
-      const lngNum = Number(lng);
       const latNum = Number(lat);
-      // EPSG:4326 in WMS 1.1.1 is lon,lat
-      params.append('bbox', `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`);
-      params.append('info_format', 'application/json');
-      params.append('feature_count', '50'); // Check more features to find data across layers
+      const lngNum = Number(lng);
 
-      console.log(`[LiDAR API] Fetching from WMS GetFeatureInfo: ${wmsUrl}?${params.toString()}`);
+      // Scotland approximate bounding box
+      const isOutsideScotland = latNum < 54.5 || latNum > 61.0 || lngNum < -9.0 || lngNum > -0.5;
+      if (isOutsideScotland) {
+        console.log(`[LiDAR API] Location outside Scotland: lat=${lat}, lng=${lng}`);
+        return res.status(400).json({ 
+          error: 'Location outside Scotland', 
+          details: 'This toolkit currently only supports LiDAR data for Scotland. The coordinates provided appear to be in another region (e.g. Wales or England).' 
+        });
+      }
 
-      const response = await axios.get(wmsUrl, { 
-        params: params,
-        timeout: 10000,
-        headers: { 'Accept': 'application/json' }
-      });
+      const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
+      const layers = [
+        'scotland:scotland-lidar-1-dtm', 
+        'scotland:scotland-lidar-2-dtm', 
+        'scotland:scotland-lidar-3-dtm', 
+        'scotland:scotland-lidar-4-dtm', 
+        'scotland:scotland-lidar-5-dtm', 
+        'scotland:scotland-lidar-6-dtm'
+      ];
       
-      console.log(`[LiDAR API] Response received, features: ${response.data?.features?.length}`);
-      
-      // Extract elevation from GeoServer JSON response
       let elevation = null;
-      if (response.data && response.data.features && response.data.features.length > 0) {
-        // Find the first feature that has a valid elevation property
-        for (const feature of response.data.features) {
-          const props = feature.properties;
-          if (!props) continue;
-          
-          // Check all properties for a numeric value that looks like elevation
-          for (const key in props) {
-            const val = parseFloat(props[key]);
-            // Elevation in Scotland is rarely > 1400m or < -10m (bathymetry aside)
-            // -9999 is a common "no data" value
-            if (val !== null && val !== undefined && !isNaN(val) && val > -50 && val < 5000) {
-              elevation = val;
+      const delta = 0.0005; 
+
+      // Try combined first (efficiency)
+      const combinedLayers = layers.join(',');
+      const params = new URLSearchParams({
+        service: 'WMS',
+        version: '1.1.1',
+        request: 'GetFeatureInfo',
+        layers: combinedLayers,
+        query_layers: combinedLayers,
+        info_format: 'application/json',
+        x: '50',
+        y: '50',
+        width: '101',
+        height: '101',
+        srs: 'EPSG:4326',
+        bbox: `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`,
+        feature_count: '50'
+      });
+
+      console.log(`[LiDAR API] Fetching from WMS GetFeatureInfo (Combined): ${wmsUrl}?${params.toString()}`);
+
+      try {
+        const response = await axios.get(wmsUrl, { params, timeout: 5000 });
+        elevation = extractElevationFromWmsResponse(response.data);
+      } catch (e: any) {
+        console.log(`[LiDAR API] Combined request failed or timed out: ${e.message}`);
+      }
+
+      // If combined failed, try individual layers (some GeoServers are picky)
+      if (elevation === null) {
+        console.log(`[LiDAR API] Combined failed, trying layers individually...`);
+        for (const layer of layers) {
+          try {
+            const individualParams = new URLSearchParams(params);
+            individualParams.set('layers', layer);
+            individualParams.set('query_layers', layer);
+            
+            console.log(`[LiDAR API] Trying layer: ${layer}`);
+            const response = await axios.get(wmsUrl, { params: individualParams, timeout: 3000 });
+            elevation = extractElevationFromWmsResponse(response.data);
+            if (elevation !== null) {
+              console.log(`[LiDAR API] SUCCESS: Found elevation ${elevation} in layer ${layer}`);
               break;
             }
+          } catch (e: any) {
+            console.log(`[LiDAR API] Layer ${layer} failed: ${e.message}`);
           }
-          if (elevation !== null) break;
         }
       }
 
       if (elevation !== null && elevation !== undefined) {
         res.json({ elevation });
       } else {
+        console.log(`[LiDAR API] FAILED: No elevation found for lat=${lat}, lng=${lng} after checking all layers.`);
         res.status(404).json({ error: 'No elevation data found at this location' });
       }
     } catch (error: any) {
-      console.error('[LiDAR API] Error:', error.message);
-      if (error.response) {
-        console.error('[LiDAR API] WCS Error Response:', error.response.status, error.response.data);
-      }
-      const status = error.response?.status || 500;
-      const data = error.response?.data || error.message;
-      res.status(status).json({ 
-        error: 'Failed to fetch LiDAR data', 
-        details: typeof data === 'object' ? JSON.stringify(data) : data 
-      });
+      console.error('[LiDAR API] Global Error:', error.message);
+      res.status(500).json({ error: 'Failed to fetch LiDAR data', details: error.message });
     }
   });
 
@@ -115,11 +149,22 @@ async function startServer() {
       return res.status(400).json({ error: 'Missing parameters' });
     }
 
+    const swLatNum = Number(swLat);
+    const swLngNum = Number(swLng);
+    const neLatNum = Number(neLat);
+    const neLngNum = Number(neLng);
+
+    // Scotland approximate bounding box check
+    const isOutsideScotland = swLatNum < 54.5 || neLatNum > 61.0 || swLngNum < -9.0 || neLngNum > -0.5;
+    if (isOutsideScotland) {
+      console.log(`[LiDAR Bulk API] Area outside Scotland: swLat=${swLat}, swLng=${swLng}, neLat=${neLat}, neLng=${neLng}`);
+      return res.status(400).json({ 
+        error: 'Area outside Scotland', 
+        details: 'This toolkit currently only supports LiDAR data for Scotland. The requested area appears to be in another region (e.g. Wales or England).' 
+      });
+    }
+
     try {
-      const swLatNum = Number(swLat);
-      const swLngNum = Number(swLng);
-      const neLatNum = Number(neLat);
-      const neLngNum = Number(neLng);
       const resNum = Number(resolution);
 
       const latStep = (resNum / 111320);
@@ -139,9 +184,13 @@ async function startServer() {
       const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
       const layers = 'scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
 
+      // Optimization: Try to use WCS GetCoverage if the area is small enough,
+      // otherwise fall back to the (still slow but slightly better) WMS approach.
+      // For now, let's stick to a more robust WMS GetFeatureInfo but with better batching.
+      
       // Process in larger batches and use a more efficient concurrent approach
-      const CONCURRENCY = 10; 
-      const batchSize = 20;
+      const CONCURRENCY = 15; 
+      const batchSize = 10;
       
       for (let i = 0; i < total; i += (CONCURRENCY * batchSize)) {
         const tasks = [];
@@ -252,18 +301,49 @@ async function startServer() {
         responseType: 'arraybuffer',
         timeout: 30000,
         headers: {
-          'Accept': 'image/tiff, */*'
+          'Accept': 'image/tiff, application/xml, text/xml, */*'
         }
       });
 
-      console.log(`[Proxy API] Success: ${url} (Status: ${response.status})`);
-      res.set('Content-Type', response.headers['content-type'] || 'image/tiff');
+      console.log(`[Proxy API] Success: ${url} (Status: ${response.status}, Content-Type: ${response.headers['content-type']})`);
+      
+      const contentType = response.headers['content-type'] || '';
+      if (contentType.includes('xml') || contentType.includes('html')) {
+        const text = Buffer.from(response.data).toString('utf8');
+        console.warn(`[Proxy API] WARNING: Received XML/HTML instead of TIFF:`, text.substring(0, 500));
+        
+        // Try to extract a useful error message from the XML
+        let errorMsg = 'The LiDAR server returned an error instead of a tile.';
+        if (text.includes('ServiceException')) {
+          const match = text.match(/<ServiceException[^>]*>([\s\S]*?)<\/ServiceException>/);
+          if (match && match[1]) {
+            errorMsg = match[1].trim();
+          }
+        } else if (text.includes('ExceptionText')) {
+          const match = text.match(/<ExceptionText>([\s\S]*?)<\/ExceptionText>/);
+          if (match && match[1]) {
+            errorMsg = match[1].trim();
+          }
+        }
+        
+        return res.status(404).json({ 
+          error: 'LiDAR Tile Not Available', 
+          details: errorMsg,
+          serverRawResponse: text.substring(0, 1000) 
+        });
+      }
+
+      res.set('Content-Type', contentType || 'image/tiff');
       if (response.headers['content-length']) {
         res.set('Content-Length', response.headers['content-length']);
       }
       res.send(response.data);
     } catch (error: any) {
       console.error('[Proxy API] Error:', error.message);
+      if (error.response) {
+        const text = Buffer.from(error.response.data).toString('utf8').substring(0, 500);
+        console.error(`[Proxy API] Server Error Response (${error.response.status}):`, text);
+      }
       const status = error.response?.status || 500;
       res.status(status).json({ error: 'Failed to proxy GeoTIFF download', details: error.message });
     }

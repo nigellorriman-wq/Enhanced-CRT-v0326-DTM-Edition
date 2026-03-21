@@ -1,5 +1,9 @@
 import * as fromGeoTIFF from 'geotiff';
 import { get, set, del, keys } from 'idb-keyval';
+import proj4 from 'proj4';
+
+// Define British National Grid (BNG) projection with accurate datum transformation
+proj4.defs("EPSG:27700", "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs");
 
 export interface OfflineGeoTiff {
   id: string;
@@ -13,10 +17,57 @@ export interface OfflineGeoTiff {
   resolution: number; // e.g. 0.5, 1, 2 (metres)
   blob: Blob;
   addedAt: number;
+  saved?: boolean;
 }
 
 class LidarGeoTiffService {
-  private loadedTiffs: Map<string, { tiff: any; image: any; pool: any }> = new Map();
+  private loadedTiffs: Map<string, { tiff: any; image: any; pool: any; minMax?: { min: number; max: number } }> = new Map();
+  private globalAltitudeRange: { min: number; max: number } | null = null;
+
+  setGlobalAltitudeRange(min: number, max: number) {
+    this.globalAltitudeRange = { min, max };
+    console.log(`[LiDAR] Global altitude range set: ${min.toFixed(1)}m - ${max.toFixed(1)}m`);
+  }
+
+  getGlobalAltitudeRange() {
+    return this.globalAltitudeRange;
+  }
+
+  async getMinMax(id: string): Promise<{ min: number; max: number } | null> {
+    let entry = this.loadedTiffs.get(id);
+    if (!entry) {
+      await this.loadAll();
+      entry = this.loadedTiffs.get(id);
+    }
+    if (!entry) return null;
+
+    if (entry.minMax) return entry.minMax;
+
+    const { image } = entry;
+    try {
+      const rasters = await image.readRasters();
+      if (!rasters || rasters.length === 0) return null;
+      const data = rasters[0] as any;
+
+      let min = Infinity;
+      let max = -Infinity;
+      for (let i = 0; i < data.length; i++) {
+        const val = data[i];
+        if (val !== -9999 && val !== -3.4028234663852886e+38 && !isNaN(val)) {
+          if (val < min) min = val;
+          if (val > max) max = val;
+        }
+      }
+      
+      if (min !== Infinity) {
+        entry.minMax = { min, max };
+      }
+      
+      return min === Infinity ? null : { min, max };
+    } catch (e) {
+      return null;
+    }
+  }
 
   /**
    * Downloads a GeoTIFF from a URL and stores it in IndexedDB
@@ -26,28 +77,34 @@ class LidarGeoTiffService {
     const response = await fetch(proxyUrl);
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(`Failed to download GeoTIFF: ${errorData.details || response.statusText}`);
+      const details = errorData.details || response.statusText;
+      const error = errorData.error || 'Download failed';
+      throw new Error(`${error}: ${details}`);
     }
     
     const blob = await response.blob();
     
-    // Check if the response is actually an XML error (common with GeoServer)
+    // Check if the response is actually an XML error (just in case proxy didn't catch it)
     if (blob.type.includes('xml') || blob.type.includes('text/html')) {
       const text = await blob.text();
-      if (text.includes('ServiceException') || text.includes('ExceptionReport')) {
-        throw new Error('LiDAR server error: The requested tile might not be available in this resolution or area.');
-      }
+      console.error(`[LiDAR] Server returned non-image response for ${url}:`, text.substring(0, 500));
+      throw new Error(`LiDAR server error: The requested tile might not be available in this resolution or area. (Server said: ${text.substring(0, 200)})`);
     }
 
     const tiff = await fromGeoTIFF.fromBlob(blob);
     const image = await tiff.getImage();
-    const [minLng, minLat, maxLng, maxLat] = image.getBoundingBox();
+    const [minX, minY, maxX, maxY] = image.getBoundingBox();
+    
+    // Convert BNG bounds to WGS84 for metadata (used for map display)
+    const [swLng, swLat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+    const [neLng, neLat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+    
     const resolution = image.getResolution()[0];
 
     const offlineData: OfflineGeoTiff = {
       id: url,
       name,
-      bounds: { minLat, maxLat, minLng, maxLng },
+      bounds: { minLat: swLat, maxLat: neLat, minLng: swLng, maxLng: neLng },
       resolution,
       blob,
       addedAt: Date.now()
@@ -58,6 +115,77 @@ class LidarGeoTiffService {
     // Also load into memory immediately
     const pool = new fromGeoTIFF.Pool();
     this.loadedTiffs.set(url, { tiff, image, pool });
+  }
+
+  /**
+   * Stores a GeoTIFF blob directly in IndexedDB
+   */
+  async storeBlob(blob: Blob, name: string, id?: string): Promise<string> {
+    const tiffId = id || `imported_${Date.now()}_${name.replace(/[^a-z0-9]/gi, '_')}`;
+    const tiff = await fromGeoTIFF.fromBlob(blob);
+    const image = await tiff.getImage();
+    const [minX, minY, maxX, maxY] = image.getBoundingBox();
+    
+    // Convert BNG bounds to WGS84 for metadata
+    const [swLng, swLat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+    const [neLng, neLat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+    
+    const resolution = image.getResolution()[0];
+
+    const offlineData: OfflineGeoTiff = {
+      id: tiffId,
+      name,
+      bounds: { minLat: swLat, maxLat: neLat, minLng: swLng, maxLng: neLng },
+      resolution,
+      blob,
+      addedAt: Date.now()
+    };
+
+    await set(`geotiff_${tiffId}`, offlineData);
+    
+    // Also load into memory immediately
+    const pool = new fromGeoTIFF.Pool();
+    this.loadedTiffs.set(tiffId, { tiff, image, pool });
+    return tiffId;
+  }
+
+  /**
+   * Exports a stored GeoTIFF as a file download
+   */
+  async exportStoredTiff(id: string): Promise<void> {
+    const data = await get<OfflineGeoTiff>(`geotiff_${id}`);
+    if (!data) {
+      // Try without prefix if it's already the full key
+      const directData = await get<OfflineGeoTiff>(id);
+      if (!directData) throw new Error('GeoTIFF not found in storage');
+      
+      // Mark as saved
+      directData.saved = true;
+      await set(id, directData);
+
+      const url = URL.createObjectURL(directData.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${directData.name.replace(/[^a-z0-9]/gi, '_')}.tif`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      return;
+    }
+
+    // Mark as saved
+    data.saved = true;
+    await set(`geotiff_${id}`, data);
+
+    const url = URL.createObjectURL(data.blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${data.name.replace(/[^a-z0-9]/gi, '_')}.tif`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   /**
@@ -102,21 +230,24 @@ class LidarGeoTiffService {
     });
 
     for (const [id, { image }] of sortedTiffs) {
-      const [minLng, minLat, maxLng, maxLat] = image.getBoundingBox();
+      const [minX, minY, maxX, maxY] = image.getBoundingBox();
       
-      // Check if point is within bounds
-      if (lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat) {
-        // Convert lat/lng to pixel coordinates
+      // Convert input WGS84 lat/lng to BNG for lookup
+      const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+      
+      // Check if point is within bounds (in BNG)
+      if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
+        // Convert BNG to pixel coordinates
         const width = image.getWidth();
         const height = image.getHeight();
         const res = image.getResolution();
         const origin = image.getOrigin();
 
-        // Standard GeoTIFF mapping: x = (lng - originX) / resX, y = (originY - lat) / abs(resY)
-        const x = Math.floor((lng - origin[0]) / res[0]);
-        const y = Math.floor((origin[1] - lat) / Math.abs(res[1]));
+        // Standard GeoTIFF mapping: x = (e - originX) / resX, y = (originY - n) / abs(resY)
+        const x = Math.floor((e - origin[0]) / res[0]);
+        const y = Math.floor((origin[1] - n) / Math.abs(res[1]));
 
-        console.log(`[LiDAR] Tile ${id} match. Origin: ${origin[0]}, ${origin[1]}. Res: ${res[0]}, ${res[1]}. Calc Pixel: x=${x}, y=${y}`);
+        console.log(`[LiDAR] Tile ${id} match. BNG: ${e.toFixed(0)}, ${n.toFixed(0)}. Origin: ${origin[0]}, ${origin[1]}. Res: ${res[0]}, ${res[1]}. Calc Pixel: x=${x}, y=${y}`);
 
         if (x >= 0 && x < width && y >= 0 && y < height) {
           try {
@@ -151,13 +282,32 @@ class LidarGeoTiffService {
    */
   isAreaDownloaded(lat: number, lng: number): boolean {
     if (this.loadedTiffs.size === 0) return false;
+    
+    // Convert WGS84 to BNG for lookup
+    const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+    
     for (const entry of this.loadedTiffs.values()) {
-      const [minLng, minLat, maxLng, maxLat] = entry.image.getBoundingBox();
-      if (lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat) {
+      const [minX, minY, maxX, maxY] = entry.image.getBoundingBox();
+      if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
         return true;
       }
     }
     return false;
+  }
+
+  /**
+   * Deletes all GeoTIFFs that haven't been explicitly saved
+   */
+  async clearUnsaved(): Promise<void> {
+    const allKeys = await keys();
+    const tiffKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith('geotiff_'));
+    for (const key of tiffKeys) {
+      const data = await get<OfflineGeoTiff>(key);
+      if (data && !data.saved) {
+        await del(key);
+        this.loadedTiffs.delete(data.id);
+      }
+    }
   }
 
   /**
@@ -171,7 +321,7 @@ class LidarGeoTiffService {
   /**
    * Generates a color-mapped overlay for a GeoTIFF
    */
-  async generateOverlay(id: string): Promise<{ dataUrl: string; bounds: [[number, number], [number, number]] } | null> {
+  async generateOverlay(id: string): Promise<{ dataUrl: string; bounds: [[number, number], [number, number]]; timestamp?: number } | null> {
     let entry = this.loadedTiffs.get(id);
     if (!entry) {
       await this.loadAll();
@@ -182,7 +332,11 @@ class LidarGeoTiffService {
     const { image } = entry;
     const width = image.getWidth();
     const height = image.getHeight();
-    const [minLng, minLat, maxLng, maxLat] = image.getBoundingBox();
+    const [minX, minY, maxX, maxY] = image.getBoundingBox();
+    
+    // Convert BNG bounds to WGS84 for Leaflet overlay
+    const [swLng, swLat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+    const [neLng, neLat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
 
     // Read all rasters
     let rasters;
@@ -197,22 +351,26 @@ class LidarGeoTiffService {
     const data = rasters[0] as any;
 
     // Find min/max for normalization
-    let min = Infinity;
-    let max = -Infinity;
+    let localMin = Infinity;
+    let localMax = -Infinity;
     for (let i = 0; i < data.length; i++) {
       const val = data[i];
       if (val !== -9999 && val !== -3.4028234663852886e+38 && !isNaN(val)) {
-        if (val < min) min = val;
-        if (val > max) max = val;
+        if (val < localMin) localMin = val;
+        if (val > localMax) localMax = val;
       }
     }
 
-    if (min === Infinity) {
+    if (localMin === Infinity) {
       return null;
     }
 
+    // Use global range if available, otherwise use local min/max
+    const min = this.globalAltitudeRange?.min ?? localMin;
+    const max = this.globalAltitudeRange?.max ?? localMax;
+
     if (min === max) {
-      max = min + 1;
+      return null; // Avoid division by zero
     }
 
     // Create canvas
@@ -225,49 +383,75 @@ class LidarGeoTiffService {
     const imageData = ctx.createImageData(width, height);
     const d = imageData.data;
 
+    console.log(`[LiDAR] Generating overlay for ${id}. Local range: ${localMin.toFixed(1)}m - ${localMax.toFixed(1)}m. Using range: ${min.toFixed(1)}m - ${max.toFixed(1)}m`);
+
+    // Pre-calculate color lookup table (256 levels) for performance
+    const lut = new Uint8Array(256 * 3);
+    for (let i = 0; i < 256; i++) {
+      const color = this.getColorForHeight(i / 255);
+      lut[i * 3] = color.r;
+      lut[i * 3 + 1] = color.g;
+      lut[i * 3 + 2] = color.b;
+    }
+
     for (let i = 0; i < data.length; i++) {
       const val = data[i];
       const idx = i * 4;
       if (val === -9999 || val === -3.4028234663852886e+38 || isNaN(val)) {
-        d[idx] = 0;
-        d[idx + 1] = 0;
-        d[idx + 2] = 0;
-        d[idx + 3] = 0; // Transparent
+        d[idx + 3] = 0; // Transparent (other channels are 0 by default)
       } else {
-        const normalized = (val - min) / (max - min);
-        const color = this.getColorForHeight(normalized);
-        d[idx] = color.r;
-        d[idx + 1] = color.g;
-        d[idx + 2] = color.b;
-        d[idx + 3] = 220; // High opacity for visibility
+        const normalized = Math.max(0, Math.min(1, (val - min) / (max - min)));
+        const lutIdx = Math.floor(normalized * 255) * 3;
+        d[idx] = lut[lutIdx];
+        d[idx + 1] = lut[lutIdx + 1];
+        d[idx + 2] = lut[lutIdx + 2];
+        d[idx + 3] = 255;
       }
     }
 
     ctx.putImageData(imageData, 0, 0);
     const dataUrl = canvas.toDataURL('image/png');
-    console.log(`[LiDAR] Generated overlay for ${id}, size: ${width}x${height}, range: ${min.toFixed(1)}m - ${max.toFixed(1)}m`);
     
     return {
       dataUrl,
-      bounds: [[minLat, minLng], [maxLat, maxLng]]
+      bounds: [[swLat, swLng], [neLat, neLng]],
+      timestamp: Date.now()
     };
   }
 
   public getColorForHeight(t: number) {
-    // Terrain color map (Blue -> Green -> Yellow -> Brown -> White)
-    if (t < 0.25) {
-      const f = t / 0.25;
-      return { r: 0, g: 128 * f, b: 255 };
-    } else if (t < 0.5) {
-      const f = (t - 0.25) / 0.25;
-      return { r: 0, g: 128 + 127 * f, b: 255 * (1 - f) };
-    } else if (t < 0.75) {
-      const f = (t - 0.5) / 0.25;
-      return { r: 255 * f, g: 255, b: 0 };
-    } else {
-      const f = (t - 0.75) / 0.25;
-      return { r: 255, g: 255 * (1 - f * 0.5), b: 255 * f };
+    // Refined color ramp for golf course terrain (more stops in lower range for detail)
+    const stops = [
+      { t: 0.00, r: 0, g: 68, b: 27 },      // Deep Forest Green
+      { t: 0.05, r: 0, g: 109, b: 44 },     // Dark Green
+      { t: 0.10, r: 35, g: 139, b: 69 },    // Forest Green
+      { t: 0.15, r: 65, g: 171, b: 93 },    // Grass Green
+      { t: 0.20, r: 116, g: 196, b: 118 },  // Light Grass Green
+      { t: 0.30, r: 161, g: 217, b: 155 },  // Pale Green
+      { t: 0.45, r: 199, g: 233, b: 192 },  // Very Pale Green
+      { t: 0.60, r: 255, g: 255, b: 178 },  // Pale Yellow
+      { t: 0.75, r: 254, g: 204, b: 92 },   // Soft Orange/Yellow
+      { t: 0.85, r: 253, g: 141, b: 60 },   // Orange
+      { t: 0.95, r: 189, g: 0, b: 38 },     // Reddish Brown
+      { t: 1.00, r: 255, g: 255, b: 255 }   // White (Peak)
+    ];
+
+    // Clamp t just in case
+    const val = Math.max(0, Math.min(1, t));
+    
+    for (let i = 0; i < stops.length - 1; i++) {
+      const s1 = stops[i];
+      const s2 = stops[i + 1];
+      if (val >= s1.t && val <= s2.t) {
+        const f = (val - s1.t) / (s2.t - s1.t);
+        return {
+          r: Math.round(s1.r + (s2.r - s1.r) * f),
+          g: Math.round(s1.g + (s2.g - s1.g) * f),
+          b: Math.round(s1.b + (s2.b - s1.b) * f)
+        };
+      }
     }
+    return { r: 255, g: 255, b: 255 };
   }
 }
 

@@ -1,3 +1,8 @@
+import proj4 from 'proj4';
+
+// Define British National Grid (BNG) projection with accurate datum transformation
+proj4.defs("EPSG:27700", "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs");
+
 /**
  * Service to discover Scottish Government LiDAR GeoTIFF tiles
  */
@@ -6,6 +11,8 @@ export interface LidarTile {
   name: string;
   url: string;
   resolution: number;
+  phase: number;
+  gridRef: string;
   bounds: {
     minLat: number;
     maxLat: number;
@@ -24,52 +31,98 @@ class LidarCatalogService {
     // Simulate API delay
     await new Promise(resolve => setTimeout(resolve, 800));
 
-    const tilesMap = new Map<string, LidarTile>();
-    const phases = [1, 2];
+    const tilesMap = new Map<string, LidarTile[]>();
+    const phases = [1, 2, 3, 4, 5, 6];
+    const resolutions = [0.5, 1, 2];
+    const MAX_TILES_PER_PHASE = 36;
     
-    // We'll generate mock tiles based on the OS Grid squares (1km tiles)
-    const startLat = Math.floor(bounds.minLat * 100) / 100;
-    const endLat = Math.ceil(bounds.maxLat * 100) / 100;
-    const startLng = Math.floor(bounds.minLng * 100) / 100;
-    const endLng = Math.ceil(bounds.maxLng * 100) / 100;
+    // Convert WGS84 bounds to BNG (EPSG:27700)
+    const [minE, minN] = proj4("EPSG:4326", "EPSG:27700", [bounds.minLng, bounds.minLat]);
+    const [maxE, maxN] = proj4("EPSG:4326", "EPSG:27700", [bounds.maxLng, bounds.maxLat]);
 
-    for (let lat = startLat; lat < endLat; lat += 0.01) {
-      for (let lng = startLng; lng < endLng; lng += 0.01) {
-        const gridRef = this.getMockGridRef(lat, lng);
+    // Align to 1km grid squares (standard for Scottish LiDAR tiles)
+    const startE = Math.floor(minE / 1000) * 1000;
+    const endE = Math.ceil(maxE / 1000) * 1000;
+    const startN = Math.floor(minN / 1000) * 1000;
+    const endN = Math.ceil(maxN / 1000) * 1000;
+
+    let tileCount = 0;
+    for (let e = startE; e < endE; e += 1000) {
+      for (let n = startN; n < endN; n += 1000) {
+        if (tileCount >= MAX_TILES_PER_PHASE) break;
+
+        const gridRef = this.getBNGGridRef(e, n);
+        tileCount++;
         
-        // For each grid square, offer tiles from all available phases
-        // In a real app, we'd know which phase covers which area
         for (const phase of phases) {
-          const coverageId = `scotland:scotland-lidar-${phase}-dtm`;
-          const id = `scot_lidar_ph${phase}_05m_${gridRef}`;
-          
-          if (!tilesMap.has(id)) {
-            tilesMap.set(id, {
+          for (const res of resolutions) {
+            const coverageId = `scotland:scotland-lidar-${phase}-dtm`;
+            const resStr = res === 0.5 ? '05m' : `${res}m`;
+            const id = `scot_lidar_ph${phase}_${resStr}_${gridRef}`;
+            
+            // Calculate pixel dimensions for 1km tile at requested resolution
+            const size = Math.round(1000 / res);
+
+            // Convert BNG corners back to WGS84 for the tile bounds metadata (used for map display)
+            const [swLng, swLat] = proj4("EPSG:27700", "EPSG:4326", [e, n]);
+            const [neLng, neLat] = proj4("EPSG:27700", "EPSG:4326", [e + 1000, n + 1000]);
+
+            const tile: LidarTile = {
               id,
-              name: `LiDAR Ph${phase} 0.5m - ${gridRef}`,
-              url: `https://srsp-ows.jncc.gov.uk/ows?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=GeoTIFF&bbox=${lng.toFixed(6)},${lat.toFixed(6)},${(lng + 0.01).toFixed(6)},${(lat + 0.01).toFixed(6)}&width=1000&height=1000&crs=EPSG:4326`,
-              resolution: 0.5,
+              name: `LiDAR Ph${phase} ${res}m - ${gridRef}`,
+              // Use BNG coordinates in the WCS request for perfect alignment
+              url: `https://srsp-ows.jncc.gov.uk/ows?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=GeoTIFF&bbox=${e},${n},${e + 1000},${n + 1000}&width=${size}&height=${size}&crs=EPSG:27700`,
+              resolution: res,
+              phase: phase,
+              gridRef,
               bounds: {
-                minLat: lat,
-                maxLat: lat + 0.01,
-                minLng: lng,
-                maxLng: lng + 0.01
+                minLat: swLat,
+                maxLat: neLat,
+                minLng: swLng,
+                maxLng: neLng
               }
-            });
+            };
+
+            const existing = tilesMap.get(gridRef) || [];
+            tilesMap.set(gridRef, [...existing, tile]);
           }
         }
       }
     }
 
-    return Array.from(tilesMap.values());
+    const allTiles: LidarTile[] = [];
+    tilesMap.forEach(tiles => allTiles.push(...tiles));
+    return allTiles;
   }
 
-  private getMockGridRef(lat: number, lng: number): string {
-    // Very simplified OS Grid Reference generator for mock purposes
-    // Real logic would involve complex projection math
-    const latPart = Math.round((lat - 55) * 100).toString().padStart(2, '0');
-    const lngPart = Math.round((lng + 4) * 100).toString().padStart(2, '0');
-    return `NT${lngPart}${latPart}`;
+  private getBNGGridRef(easting: number, northing: number): string {
+    // Convert easting/northing to standard OS Grid Reference (e.g. NT1134)
+    // 100km square letters
+    const e100 = Math.floor(easting / 100000);
+    const n100 = Math.floor(northing / 100000);
+    
+    if (e100 < 0 || e100 > 6 || n100 < 0 || n100 > 12) return `BNG_${Math.floor(easting/1000)}_${Math.floor(northing/1000)}`;
+
+    // The OS grid letters are a bit complex to calculate perfectly without a large lookup table
+    // but we can approximate the most common ones for Scotland
+    let prefix = '??';
+    
+    // Grid of 100km squares for Scotland/Northern UK
+    const grid: Record<string, string> = {
+      '1,4': 'NW', '2,4': 'NX', '3,4': 'NY', '4,4': 'NZ',
+      '1,5': 'NR', '2,5': 'NS', '3,5': 'NT', '4,5': 'NU',
+      '1,6': 'NM', '2,6': 'NN', '3,6': 'NO', '4,6': 'NP',
+      '1,7': 'NG', '2,7': 'NH', '3,7': 'NJ', '4,7': 'NK',
+      '1,8': 'NB', '2,8': 'NC', '3,8': 'ND', '4,8': 'NE',
+      '0,9': 'NA', '1,9': 'NA' // Simplified
+    };
+
+    prefix = grid[`${e100},${n100}`] || 'NT'; // Default to NT if not found (Central Belt)
+    
+    const eKm = Math.floor((easting % 100000) / 1000).toString().padStart(2, '0');
+    const nKm = Math.floor((northing % 100000) / 1000).toString().padStart(2, '0');
+    
+    return `${prefix}${eKm}${nKm}`;
   }
 }
 
