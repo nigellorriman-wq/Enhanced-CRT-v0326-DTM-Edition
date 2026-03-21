@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Printer, RotateCcw, BarChart3, Download, Loader2, FileText } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Printer, RotateCcw, ChartSpline, Download, Loader2, FileText } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import {
