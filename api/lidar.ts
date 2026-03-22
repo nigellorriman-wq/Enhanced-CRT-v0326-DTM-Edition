@@ -16,7 +16,7 @@ export default async function handler(req: any, res: any) {
     params.append('version', '1.1.1');
     params.append('request', 'GetFeatureInfo');
     // Query all phases to ensure coverage
-    const layers = 'scot_lidar:scot_lidar_ph1_dtm,scot_lidar:scot_lidar_ph2_dtm,scot_lidar:scot_lidar_ph3_dtm,scot_lidar:scot_lidar_ph4_dtm,scot_lidar:scot_lidar_ph5_dtm,scot_lidar:scot_lidar_ph6_dtm,scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
+    const layers = 'scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
     params.append('layers', layers);
     params.append('query_layers', layers);
     params.append('x', '50');

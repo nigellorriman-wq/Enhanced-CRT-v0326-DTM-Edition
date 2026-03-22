@@ -33,8 +33,17 @@ class LidarCatalogService {
     await new Promise(resolve => setTimeout(resolve, 800));
 
     const tilesMap = new Map<string, LidarTile[]>();
-    const phases = [1, 2, 3, 4, 5, 6];
-    const resolutions = [0.5, 1, 2];
+    
+    // Real bounding boxes for Scottish LiDAR phases from JNCC WCS DescribeCoverage
+    const phaseMetadata = [
+      { phase: 1, res: 1.0, minE: 170000, maxE: 415000, minN: 542000, maxN: 1031000 },
+      { phase: 2, res: 1.0, minE: 138733, maxE: 449726, minN: 619227, maxN: 1147864 },
+      { phase: 3, res: 0.5, minE: 195000, maxE: 415000, minN: 525000, maxN: 700000 },
+      { phase: 4, res: 0.5, minE: 205000, maxE: 397000, minN: 575000, maxN: 736000 },
+      { phase: 5, res: 0.5, minE: 233000, maxE: 367000, minN: 645000, maxN: 731000 },
+      { phase: 6, res: 0.5, minE: 210000, maxE: 265000, minN: 630000, maxN: 680000 }
+    ];
+
     const MAX_TILES_PER_PHASE = 36;
     
     // Convert WGS84 bounds to BNG (EPSG:27700)
@@ -55,49 +64,58 @@ class LidarCatalogService {
         const gridRef = this.getBNGGridRef(e, n);
         tileCount++;
         
-        for (const phase of phases) {
-          for (const res of resolutions) {
-            // Try the most likely coverage ID format first
-            const coverageId = `scot_lidar:scot_lidar_ph${phase}_dtm`;
-            const resStr = res === 0.5 ? '05m' : `${res}m`;
-            const id = `scot_lidar_ph${phase}_${resStr}_${gridRef}`;
-            
-            // Calculate pixel dimensions for 1km tile at requested resolution
-            const size = Math.round(1000 / res);
-
-            // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
-            // This ensures we use the full envelope to eliminate gaps between tiles
-            const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [e, n]);
-            const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [e + 1000, n]);
-            const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [e + 1000, n + 1000]);
-            const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [e, n + 1000]);
-            
-            const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
-            const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
-            const minLng = Math.min(p1Lng, p2Lng, p3Lng, p4Lng);
-            const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
-
-            const tile: LidarTile = {
-              id,
-              name: `LiDAR Ph${phase} ${res}m - ${gridRef}`,
-              // Use BNG coordinates in the WCS request for perfect alignment
-              // Using format=image/tiff which is more standard for WCS 1.0.0
-              url: `https://srsp-ows.jncc.gov.uk/ows?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=image/tiff&bbox=${e},${n},${e + 1000},${n + 1000}&width=${size}&height=${size}&crs=EPSG:27700`,
-              resolution: res,
-              phase: phase,
-              gridRef,
-              bounds: {
-                minLat,
-                maxLat,
-                minLng,
-                maxLng
-              },
-              corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]]
-            };
-
-            const existing = tilesMap.get(gridRef) || [];
-            tilesMap.set(gridRef, [...existing, tile]);
+        for (const meta of phaseMetadata) {
+          // Check if the 1km square intersects with the phase's bounding box
+          // We use a small buffer to ensure we don't miss edge tiles
+          const buffer = 10;
+          if (e + 1000 < meta.minE - buffer || e > meta.maxE + buffer || 
+              n + 1000 < meta.minN - buffer || n > meta.maxN + buffer) {
+            continue;
           }
+
+          const phase = meta.phase;
+          const res = meta.res;
+          
+          // Use the correct coverage ID format found in JNCC GetCapabilities
+          const coverageId = `scotland:scotland-lidar-${phase}-dtm`;
+          const resStr = res === 0.5 ? '05m' : `${res}m`;
+          const id = `scotland_lidar_ph${phase}_${resStr}_${gridRef}`;
+          
+          // Calculate pixel dimensions for 1km tile at requested resolution
+          const size = Math.round(1000 / res);
+
+          // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
+          // This ensures we use the full envelope to eliminate gaps between tiles
+          const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [e, n]);
+          const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [e + 1000, n]);
+          const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [e + 1000, n + 1000]);
+          const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [e, n + 1000]);
+          
+          const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
+          const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
+          const minLng = Math.min(p1Lng, p2Lng, p3Lng, p4Lng);
+          const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
+
+          const tile: LidarTile = {
+            id,
+            name: `LiDAR Ph${phase} ${res}m - ${gridRef}`,
+            // Use BNG coordinates in the WCS request for perfect alignment
+            // Using the specific WCS endpoint and correct coverage ID
+            url: `https://srsp-ows.jncc.gov.uk/wcs?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=image/tiff&bbox=${e},${n},${e + 1000},${n + 1000}&width=${size}&height=${size}&crs=EPSG:27700`,
+            resolution: res,
+            phase: phase,
+            gridRef,
+            bounds: {
+              minLat,
+              maxLat,
+              minLng,
+              maxLng
+            },
+            corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]]
+          };
+
+          const existing = tilesMap.get(gridRef) || [];
+          tilesMap.set(gridRef, [...existing, tile]);
         }
       }
     }

@@ -85,12 +85,21 @@ class LidarGeoTiffService {
         // Not JSON, try to get text
         try {
           const text = await response.text();
-          if (text) details = text.substring(0, 200);
+          if (text) {
+            // Check for specific JNCC/GeoServer error messages
+            if (text.includes('outside of the coverage area')) {
+              details = 'The requested area is outside the coverage of this LiDAR phase.';
+            } else if (text.includes('No raster data found')) {
+              details = 'No LiDAR data is available for this specific 1km square in this phase.';
+            } else {
+              details = text.substring(0, 200);
+            }
+          }
         } catch (te) {
           // Ignore text error
         }
       }
-      throw new Error(`Download failed (${response.status}): ${details}`);
+      throw new Error(`Download failed: ${details}`);
     }
     
     const blob = await response.blob();
@@ -99,7 +108,15 @@ class LidarGeoTiffService {
     if (blob.type.includes('xml') || blob.type.includes('text/html')) {
       const text = await blob.text();
       console.error(`[LiDAR] Server returned non-image response for ${url}:`, text.substring(0, 500));
-      throw new Error(`LiDAR server error: The requested tile might not be available in this resolution or area. (Server said: ${text.substring(0, 200)})`);
+      
+      let friendlyMessage = 'The requested tile is not available.';
+      if (text.includes('outside of the coverage area')) {
+        friendlyMessage = 'The requested area is outside the coverage of this LiDAR phase.';
+      } else if (text.includes('No raster data found')) {
+        friendlyMessage = 'No LiDAR data is available for this specific 1km square in this phase.';
+      }
+      
+      throw new Error(`LiDAR server error: ${friendlyMessage}`);
     }
 
     const tiff = await fromGeoTIFF.fromBlob(blob);
