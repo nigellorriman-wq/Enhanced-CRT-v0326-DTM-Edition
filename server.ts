@@ -68,6 +68,12 @@ async function startServer() {
 
       const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
       const layers = [
+        'scot_lidar:scot_lidar_ph1_dtm',
+        'scot_lidar:scot_lidar_ph2_dtm',
+        'scot_lidar:scot_lidar_ph3_dtm',
+        'scot_lidar:scot_lidar_ph4_dtm',
+        'scot_lidar:scot_lidar_ph5_dtm',
+        'scot_lidar:scot_lidar_ph6_dtm',
         'scotland:scotland-lidar-1-dtm', 
         'scotland:scotland-lidar-2-dtm', 
         'scotland:scotland-lidar-3-dtm', 
@@ -182,7 +188,7 @@ async function startServer() {
 
       const grid = new Float32Array(total).fill(NaN);
       const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
-      const layers = 'scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
+      const layers = 'scot_lidar:scot_lidar_ph1_dtm,scot_lidar:scot_lidar_ph2_dtm,scot_lidar:scot_lidar_ph3_dtm,scot_lidar:scot_lidar_ph4_dtm,scot_lidar:scot_lidar_ph5_dtm,scot_lidar:scot_lidar_ph6_dtm,scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
 
       // Optimization: Try to use WCS GetCoverage if the area is small enough,
       // otherwise fall back to the (still slow but slightly better) WMS approach.
@@ -339,13 +345,25 @@ async function startServer() {
       }
       res.send(response.data);
     } catch (error: any) {
-      console.error('[Proxy API] Error:', error.message);
+      const url = req.query.url as string;
+      console.error(`[Proxy API] Error fetching ${url}:`, error.message);
+      let status = 500;
+      let details = error.message;
+      
       if (error.response) {
-        const text = Buffer.from(error.response.data).toString('utf8').substring(0, 500);
-        console.error(`[Proxy API] Server Error Response (${error.response.status}):`, text);
+        status = error.response.status;
+        const contentType = error.response.headers['content-type'] || '';
+        if (contentType.includes('xml') || contentType.includes('text')) {
+          const text = Buffer.from(error.response.data).toString('utf8').substring(0, 500);
+          console.error(`[Proxy API] Server Error Response (${status}):`, text);
+          details = text;
+        }
       }
-      const status = error.response?.status || 500;
-      res.status(status).json({ error: 'Failed to proxy GeoTIFF download', details: error.message });
+      
+      res.status(status).json({ 
+        error: 'Failed to proxy GeoTIFF download', 
+        details: details 
+      });
     }
   });
 

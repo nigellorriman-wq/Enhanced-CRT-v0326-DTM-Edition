@@ -2267,7 +2267,7 @@ const App: React.FC = () => {
   const [planningReportTracks, setPlanningReportTracks] = useState<SavedRecord[]>([]);
   const [planningReportFileName, setPlanningReportFileName] = useState("");
   const [offlineGeoTiffs, setOfflineGeoTiffs] = useState<OfflineGeoTiff[]>([]);
-  const [activeGeoTiffOverlays, setActiveGeoTiffOverlays] = useState<Record<string, { dataUrl: string; bounds: [[number, number], [number, number]]; timestamp?: number }>>({});
+  const [activeGeoTiffOverlays, setActiveGeoTiffOverlays] = useState<Record<string, { dataUrl: string; bounds: [[number, number], [number, number]]; corners?: [number, number][]; timestamp?: number }>>({});
   const activeLidarOverlay = useMemo(() => {
     const keys = Object.keys(activeGeoTiffOverlays);
     if (keys.length === 0) return null;
@@ -2495,7 +2495,7 @@ const App: React.FC = () => {
             ];
             setActiveGeoTiffOverlays(prev => ({
               ...prev,
-              [id]: { dataUrl: '', bounds }
+              [id]: { dataUrl: '', bounds, corners: tiff.corners }
             }));
             if (mapInstance) {
               mapInstance.fitBounds(bounds, { padding: [50, 50] });
@@ -3383,8 +3383,9 @@ const App: React.FC = () => {
                         position={[bestTile.bounds.maxLat, bestTile.bounds.minLng]} 
                         icon={L.divIcon({ 
                           className: 'bg-transparent border-none', 
-                          html: `<div class="text-[7px] font-bold text-white bg-black/60 px-1 rounded whitespace-nowrap border border-white/20" style="transform: translate(2px, 2px)">${gridRef}<br/>${selectedTile.resolution}m</div>`,
-                          iconSize: [0, 0]
+                          html: `<div class="text-[10px] font-bold text-white whitespace-nowrap" style="text-shadow: 1px 1px 2px black; margin-top: 2px; margin-left: 2px;">${gridRef}<br/>${selectedTile.resolution}m</div>`,
+                          iconSize: [0, 0],
+                          iconAnchor: [0, 0]
                         })}
                         interactive={false}
                       />
@@ -3405,7 +3406,12 @@ const App: React.FC = () => {
                     )}
                     <Polygon 
                       key={`poly-${id}`}
-                      positions={(overlay as any).corners || overlay.bounds}
+                      positions={overlay.corners || [
+                        [overlay.bounds[0][0], overlay.bounds[0][1]],
+                        [overlay.bounds[0][0], overlay.bounds[1][1]],
+                        [overlay.bounds[1][0], overlay.bounds[1][1]],
+                        [overlay.bounds[1][0], overlay.bounds[0][1]]
+                      ]}
                       pathOptions={{ 
                         color: '#facc15', 
                         weight: 3, 

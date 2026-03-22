@@ -57,7 +57,8 @@ class LidarCatalogService {
         
         for (const phase of phases) {
           for (const res of resolutions) {
-            const coverageId = `scotland:scotland-lidar-${phase}-dtm`;
+            // Try the most likely coverage ID format first
+            const coverageId = `scot_lidar:scot_lidar_ph${phase}_dtm`;
             const resStr = res === 0.5 ? '05m' : `${res}m`;
             const id = `scot_lidar_ph${phase}_${resStr}_${gridRef}`;
             
@@ -80,7 +81,8 @@ class LidarCatalogService {
               id,
               name: `LiDAR Ph${phase} ${res}m - ${gridRef}`,
               // Use BNG coordinates in the WCS request for perfect alignment
-              url: `https://srsp-ows.jncc.gov.uk/ows?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=GeoTIFF&bbox=${e},${n},${e + 1000},${n + 1000}&width=${size}&height=${size}&crs=EPSG:27700`,
+              // Using format=image/tiff which is more standard for WCS 1.0.0
+              url: `https://srsp-ows.jncc.gov.uk/ows?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=image/tiff&bbox=${e},${n},${e + 1000},${n + 1000}&width=${size}&height=${size}&crs=EPSG:27700`,
               resolution: res,
               phase: phase,
               gridRef,

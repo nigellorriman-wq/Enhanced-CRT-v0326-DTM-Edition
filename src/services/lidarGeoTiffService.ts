@@ -77,10 +77,20 @@ class LidarGeoTiffService {
     const proxyUrl = `/api/proxy-geotiff?url=${encodeURIComponent(url)}`;
     const response = await fetch(proxyUrl);
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const details = errorData.details || response.statusText;
-      const error = errorData.error || 'Download failed';
-      throw new Error(`${error}: ${details}`);
+      let details = response.statusText;
+      try {
+        const errorData = await response.json();
+        details = errorData.details || errorData.error || details;
+      } catch (e) {
+        // Not JSON, try to get text
+        try {
+          const text = await response.text();
+          if (text) details = text.substring(0, 200);
+        } catch (te) {
+          // Ignore text error
+        }
+      }
+      throw new Error(`Download failed (${response.status}): ${details}`);
     }
     
     const blob = await response.blob();
@@ -217,14 +227,24 @@ class LidarGeoTiffService {
     for (const key of tiffKeys) {
       const data = await get<OfflineGeoTiff>(key);
       if (data) {
-        tiffs.push(data);
         // Pre-initialize the GeoTIFF object for fast querying
         if (!this.loadedTiffs.has(data.id)) {
           const tiff = await fromGeoTIFF.fromBlob(data.blob);
           const image = await tiff.getImage();
           const pool = new fromGeoTIFF.Pool();
           this.loadedTiffs.set(data.id, { tiff, image, pool });
+          
+          // Fallback for missing corners in older stored data
+          if (!data.corners) {
+            const [minX, minY, maxX, maxY] = image.getBoundingBox();
+            const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+            const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+            const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+            const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+            data.corners = [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]];
+          }
         }
+        tiffs.push(data);
       }
     }
     return tiffs;
@@ -469,10 +489,23 @@ class LidarGeoTiffService {
     ctx.putImageData(imageData, 0, 0);
     const dataUrl = canvas.toDataURL('image/png');
     
+    // Try to find corners from the original data if possible
+    let finalCorners = [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]] as [number, number][];
+    try {
+      const allKeys = await keys();
+      const key = allKeys.find(k => typeof k === 'string' && k.endsWith(id));
+      if (key) {
+        const data = await get<OfflineGeoTiff>(key);
+        if (data?.corners) finalCorners = data.corners;
+      }
+    } catch (e) {
+      // Fallback to calculated corners
+    }
+    
     return {
       dataUrl,
       bounds: [[minLat, minLng], [maxLat, maxLng]],
-      corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]],
+      corners: finalCorners,
       timestamp: Date.now()
     };
   }
