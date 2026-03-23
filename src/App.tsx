@@ -1260,7 +1260,7 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   );
 };
 
-const MapBoundsController = ({ points }: { points: GeoPoint[] }) => {
+export const MapBoundsController = ({ points }: { points: GeoPoint[] }) => {
   const map = useMap();
   useEffect(() => {
     if (points.length > 0) {
@@ -1277,7 +1277,7 @@ const MapBoundsController = ({ points }: { points: GeoPoint[] }) => {
   return null;
 };
 
-const MapRuler: React.FC<{ isSummary: boolean }> = ({ isSummary }) => {
+export const MapRuler: React.FC<{ isSummary: boolean }> = ({ isSummary }) => {
   const map = useMap();
   const [pixelsPerMeter, setPixelsPerMeter] = useState(0);
 
@@ -3176,8 +3176,8 @@ const App: React.FC = () => {
               <input type="file" accept=".kml" onChange={importKMLForPlanningReport} className="hidden" />
             </label>
             <button onClick={() => { setViewingRecord(null); setView('stimp'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
-              <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-6 shadow-xl border border-blue-500/20"><Gauge size={28} className="text-lime-500" /></div>
-              <h2 className="text-2xl font-bold mb-2 uppercase text-lime-400">Stimp Slopes</h2>
+              <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-emerald-600/40"><Gauge size={28} /></div>
+              <h2 className="text-2xl font-bold mb-2 uppercase text-emerald-500">Stimp Slopes</h2>
               <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Speed correction for sloping greens</p>
             </button>
             <button onClick={() => setView('manual')} className="mt-2 bg-slate-800/50 border border-white/10 rounded-[1.8rem] py-6 flex items-center justify-center gap-4 active:bg-slate-700 transition-colors">

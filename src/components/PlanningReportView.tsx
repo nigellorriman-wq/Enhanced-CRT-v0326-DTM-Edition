@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Printer, RotateCcw, ChartSpline, Download, Loader2, FileText } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Printer, RotateCcw, ChartSpline, Download, Loader2, FileText, Wind } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import {
@@ -15,8 +15,12 @@ import {
   Label,
   ReferenceLine
 } from 'recharts';
-import { SavedRecord, GeoPoint, UnitSystem, calculateDistance } from '../App';
+import { SavedRecord, GeoPoint, UnitSystem, calculateDistance, MapBoundsController, MapRuler } from '../App';
 import { lidarGeoTiffService } from '../services/lidarGeoTiffService';
+import { fetchAverageWindData, WindData } from '../services/windService';
+import { MapContainer, TileLayer, Polyline, Marker, Tooltip as LeafletTooltip } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 interface PlanningReportViewProps {
   tracks: SavedRecord[];
@@ -43,6 +47,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   const [reportTitle, setReportTitle] = useState(fileName);
   const [showTitleDialog, setShowTitleDialog] = useState(true);
   const [profiles, setProfiles] = useState<Record<string, { scratch: ProfilePoint[], bogey: ProfilePoint[] }>>({});
+  const [avgWindData, setAvgWindData] = useState<WindData | null>(null);
+  const [loadingWind, setLoadingWind] = useState(false);
   const profilesRef = useRef(profiles);
   const isLoadingLidarRef = useRef(isLoadingLidar);
   const reportRef = useRef<HTMLDivElement>(null);
@@ -51,6 +57,28 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   useEffect(() => { isLoadingLidarRef.current = isLoadingLidar; }, [isLoadingLidar]);
 
   const currentTrack = tracks[currentIndex];
+  const isSummaryPage = currentIndex === tracks.length;
+
+  useEffect(() => {
+    if (isSummaryPage && tracks.length > 0 && avgWindData === null && !loadingWind) {
+      const fetchWind = async () => {
+        setLoadingWind(true);
+        const firstPoint = tracks[0].points[0];
+        if (firstPoint) {
+          const data = await fetchAverageWindData(firstPoint.lat, firstPoint.lng);
+          setAvgWindData(data);
+        }
+        setLoadingWind(false);
+      };
+      fetchWind();
+    }
+  }, [isSummaryPage, tracks, avgWindData, loadingWind]);
+
+  const getCardinalDirection = (deg: number) => {
+    const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    const index = Math.round(deg / 22.5) % 16;
+    return directions[index];
+  };
 
   const fetchLidar = async (lat: number, lng: number): Promise<number | null> => {
     // Check offline GeoTIFF data first
@@ -169,27 +197,31 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   };
 
   useEffect(() => {
-    if (currentTrack) {
+    if (currentTrack && !isSummaryPage) {
       generateProfile(currentTrack);
     }
-  }, [currentIndex, tracks]);
+  }, [currentIndex, tracks, isSummaryPage]);
 
   const exportPDF = async () => {
     setIsExporting(true);
+    window.scrollTo(0, 0);
     const pdf = new jsPDF('p', 'mm', 'a4');
 
-    for (let i = 0; i < tracks.length; i++) {
+    for (let i = 0; i <= tracks.length; i++) {
       setCurrentIndex(i);
       
-      // Wait for profile to be generated for this specific track AND for loading to finish
-      let attempts = 0;
-      while ((!profilesRef.current[tracks[i].id] || isLoadingLidarRef.current) && attempts < 300) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        attempts++;
+      if (i < tracks.length) {
+        // Wait for profile to be generated for this specific track AND for loading to finish
+        let attempts = 0;
+        while ((!profilesRef.current[tracks[i].id] || isLoadingLidarRef.current) && attempts < 300) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          attempts++;
+        }
       }
       
-      // Extra wait for Recharts to render
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Extra wait for Recharts or Leaflet to render
+      const waitTime = i === tracks.length ? 3000 : 1500;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
       
       if (reportRef.current) {
         const canvas = await html2canvas(reportRef.current, {
@@ -232,6 +264,50 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     const startAlt = data[0][yRightKey as keyof ProfilePoint] as number;
     const rightDomain = [leftDomain[0] + startAlt, leftDomain[1] + startAlt];
 
+    const lastPoint = data[data.length - 1];
+    const holeLength = isImperial ? lastPoint.distance : lastPoint.distanceMetres;
+    const elevDiff = isImperial ? lastPoint.elevationDiff : lastPoint.elevationDiffMetres;
+    
+    // Course Rating System Manual adjustment for EPL [Elevation]
+    // 1. Determine if it's a short hole for max adjustment constraint
+    const holeLengthYards = lastPoint.distance;
+    const isMen = currentTrack?.genderRated === 'Men';
+    const isWomen = currentTrack?.genderRated === 'Women';
+    const isShortHole = (isMen && holeLengthYards < 230) || (isWomen && holeLengthYards < 200);
+
+    let adjustment = 0;
+    if (isImperial) {
+      // Lower limit of 10 feet elevation difference
+      if (Math.abs(elevDiff) >= 10) {
+        // Elevation is in feet. Round to nearest 10 feet.
+        let roundedElevFeet = Math.round(elevDiff / 10) * 10;
+        // For short holes, maximum adjustment is 40 feet
+        if (isShortHole) {
+          roundedElevFeet = Math.max(-40, Math.min(40, roundedElevFeet));
+        }
+        // Add to distance. Since distance is in yards, convert feet to yards (3 ft = 1 yd)
+        adjustment = roundedElevFeet / 3;
+      }
+    } else {
+      // Lower limit of 3 metres elevation difference (approx 10 feet)
+      if (Math.abs(elevDiff) >= 3) {
+        // Elevation is in metres. Round to nearest 3 metres.
+        let roundedElevMetres = Math.round(elevDiff / 3) * 3;
+        // For short holes, maximum adjustment is 40 feet (~12.2 metres)
+        if (isShortHole) {
+          const maxAdjMetres = 40 / 3.28084;
+          roundedElevMetres = Math.max(-maxAdjMetres, Math.min(maxAdjMetres, roundedElevMetres));
+        }
+        // Add to distance in metres
+        adjustment = roundedElevMetres;
+      }
+    }
+
+    const epl = holeLength + adjustment;
+    
+    const lengthLabel = `${holeLength.toFixed(0)}${xUnit === 'Yards' ? 'y' : 'm'}`;
+    const eplLabel = `${epl.toFixed(0)}${xUnit === 'Yards' ? 'y' : 'm'}`;
+
     return (
       <div className="flex flex-col w-full mb-6">
         <div className="flex justify-between items-center mb-2 px-4">
@@ -252,7 +328,14 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 tickFormatter={(val) => val.toFixed(1)}
                 stroke="#0f172a"
               >
-                <Label value={`Distance (${xUnit})`} offset={-10} position="insideBottom" fontSize={10} fontWeight="bold" fill="#0f172a" />
+                <Label 
+                  value={`Distance (${xUnit}) | Length: ${lengthLabel} | EPL [Elevation]: ${eplLabel}`} 
+                  offset={-10} 
+                  position="insideBottom" 
+                  fontSize={10} 
+                  fontWeight="bold" 
+                  fill="#0f172a" 
+                />
               </XAxis>
               
               <YAxis 
@@ -413,6 +496,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
               Hole {t.holeNumber || idx + 1}
             </button>
           ))}
+          <button
+            onClick={() => setCurrentIndex(tracks.length)}
+            className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest whitespace-nowrap transition-all ${currentIndex === tracks.length ? 'bg-amber-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
+          >
+            Summary
+          </button>
         </div>
 
         <div 
@@ -440,10 +529,10 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
               </div>
             </div>
             <div className="flex flex-col items-end text-right">
-              <span className="text-base font-black text-slate-900 uppercase">Hole {currentTrack?.holeNumber || currentIndex + 1}</span>
+              <span className="text-base font-black text-slate-900 uppercase">{isSummaryPage ? 'Course Summary' : `Hole ${currentTrack?.holeNumber || currentIndex + 1}`}</span>
               <span className="text-[9px] font-bold text-slate-900 uppercase tracking-widest mb-1">{reportTitle}</span>
               {(() => {
-                const startPoint = currentTrack?.raterPathPoints?.[0] || currentTrack?.points[0];
+                const startPoint = isSummaryPage ? tracks[0]?.points[0] : (currentTrack?.raterPathPoints?.[0] || currentTrack?.points[0]);
                 if (!startPoint) return null;
                 return (
                   <a 
@@ -459,7 +548,205 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             </div>
           </div>
 
-          {currentProfile ? (
+          <div className={`flex-1 flex flex-col report-map`}>
+            <style>{`
+              .report-map .leaflet-container {
+                background: white !important;
+              }
+              .custom-div-icon {
+                background: none !important;
+                border: none !important;
+              }
+            `}</style>
+            {isSummaryPage ? (
+              <div className="flex-1 flex flex-col">
+                <div className="h-[600px] w-full rounded-3xl overflow-hidden border border-slate-200 shadow-inner relative">
+                  <MapContainer
+                    key="report-map-summary"
+                    center={[tracks[0]?.points[0]?.lat || 0, tracks[0]?.points[0]?.lng || 0]}
+                    zoom={16}
+                    style={{ height: '100%', width: '100%' }}
+                    zoomControl={false}
+                    dragging={false}
+                    scrollWheelZoom={false}
+                    doubleClickZoom={false}
+                    attributionControl={false}
+                    preferCanvas={true}
+                  >
+                  <TileLayer
+                    url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                    attribution='&copy; Esri'
+                  />
+                  {tracks.map((track, idx) => {
+                    const points = track.raterPathPoints || track.points;
+                    const midIdx = Math.floor(points.length / 2);
+                    const midPoint = points[midIdx];
+                    return (
+                      <React.Fragment key={track.id}>
+                        <Polyline
+                          positions={points.map(p => [p.lat, p.lng])}
+                          color="#fbbf24"
+                          weight={4}
+                          opacity={0.9}
+                        />
+                        <Marker
+                          position={[midPoint.lat, midPoint.lng]}
+                          icon={L.divIcon({
+                            className: 'custom-div-icon',
+                            html: `<div style="background-color: white; color: #1e293b; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; border: 2px solid #fbbf24; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${track.holeNumber || idx + 1}</div>`,
+                            iconSize: [24, 24],
+                            iconAnchor: [12, 12]
+                          })}
+                        />
+                      </React.Fragment>
+                    );
+                  })}
+                  <MapBoundsController points={tracks.flatMap(t => t.raterPathPoints || t.points)} />
+                  <MapRuler isSummary={true} />
+                </MapContainer>
+                
+                {avgWindData && (
+                  <div className="absolute top-4 left-4 bg-white/90 backdrop-blur-sm p-2 rounded-2xl border border-slate-200 shadow-sm z-[1000] flex flex-col items-center gap-1">
+                    <span className="text-[7px] font-black text-slate-400 uppercase tracking-[0.2em]">Prevailing Wind</span>
+                    <div className="w-14 h-14 rounded-full border-2 border-slate-200 flex items-center justify-center relative bg-white shadow-sm">
+                      <div 
+                        className="absolute inset-0 flex items-center justify-center transition-transform duration-1000 ease-out"
+                        style={{ transform: `rotate(${avgWindData.avgDirectionDeg + 180}deg)` }}
+                      >
+                        <div className="h-full w-full relative">
+                          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[8px] border-b-emerald-500" />
+                        </div>
+                      </div>
+                      <div className="z-10 flex flex-col items-center justify-center bg-white rounded-full w-10 h-10">
+                        <span className="text-xs font-black text-slate-900 leading-none">{avgWindData.avgSpeedMph.toFixed(0)}</span>
+                        <span className="text-[6px] font-bold text-slate-500 uppercase">mph</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-center -mt-0.5">
+                      <span className="text-[9px] font-black text-slate-900 uppercase tracking-widest">
+                        {getCardinalDirection(avgWindData.avgDirectionDeg)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm px-3 py-1.5 rounded-full border border-slate-200 shadow-sm z-[1000]">
+                  <span className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Satellite Overview</span>
+                </div>
+              </div>
+              
+              {/* Environmental Data Section */}
+              <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mb-0.5">Environmental Data</h4>
+                    <h3 className="text-base font-bold text-slate-900 uppercase tracking-widest">Daytime Climatology Summary</h3>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Period: April – October (08:00–20:00)</p>
+                  </div>
+                </div>
+                
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-amber-50 flex items-center justify-center">
+                      <Wind className="w-4 h-4 text-amber-500" />
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Daytime Avg Wind</p>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-xl font-black text-slate-900">
+                          {loadingWind ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-slate-300" />
+                          ) : avgWindData !== null ? (
+                            avgWindData.avgSpeedMph.toFixed(1)
+                          ) : (
+                            '--'
+                          )}
+                        </span>
+                        <span className="text-[9px] font-bold text-slate-500 uppercase">mph</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-orange-50 flex items-center justify-center">
+                      <Wind className="w-4 h-4 text-orange-500" />
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Daytime Avg Gust</p>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-xl font-black text-slate-900">
+                          {loadingWind ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-slate-300" />
+                          ) : avgWindData !== null ? (
+                            avgWindData.avgGustMph.toFixed(1)
+                          ) : (
+                            '--'
+                          )}
+                        </span>
+                        <span className="text-[9px] font-bold text-slate-500 uppercase">mph</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full border-2 border-emerald-100 flex items-center justify-center relative bg-emerald-50/30">
+                      <div 
+                        className="absolute inset-0 flex items-center justify-center"
+                        style={{ transform: avgWindData ? `rotate(${avgWindData.avgDirectionDeg + 180}deg)` : 'none' }}
+                      >
+                        <div className="h-full w-full relative">
+                          <div className="absolute top-0.5 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[3px] border-l-transparent border-r-[3px] border-r-transparent border-b-[5px] border-b-emerald-500" />
+                        </div>
+                      </div>
+                      <div className="z-10 flex flex-col items-center justify-center">
+                        <span className="text-[10px] font-black text-slate-900 leading-none">
+                          {avgWindData ? getCardinalDirection(avgWindData.avgDirectionDeg) : '--'}
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Daytime Avg Direction</p>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-xl font-black text-slate-900">
+                          {loadingWind ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-slate-300" />
+                          ) : avgWindData !== null ? (
+                            avgWindData.avgDirectionDeg.toFixed(0)
+                          ) : (
+                            '--'
+                          )}
+                        </span>
+                        <span className="text-[9px] font-bold text-slate-500 uppercase">°</span>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center">
+                      <FileText className="w-4 h-4 text-blue-500" />
+                    </div>
+                    <div>
+                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Data Source</p>
+                      <a 
+                        href="https://open-meteo.com/" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-[9px] font-bold text-blue-600 uppercase tracking-widest hover:underline"
+                      >
+                        Open-Meteo Archive
+                      </a>
+                    </div>
+                  </div>
+                </div>
+                
+                <p className="mt-3 text-[7px] font-medium text-slate-400 leading-relaxed italic">
+                  * Average daytime wind speed (08:00–20:00), direction, and max gust calculated at 10m height using historical data from the last 3 full years (2022-2024) for the months of April to October.
+                </p>
+              </div>
+            </div>
+          ) : currentProfile ? (
             <div className="flex-1 flex flex-col">
               {renderChart(currentProfile.scratch, `Scratch ${currentTrack?.genderRated ? `(${currentTrack.genderRated})` : ''}`, '#10b981')}
               {renderChart(currentProfile.bogey, `Bogey ${currentTrack?.genderRated ? `(${currentTrack.genderRated})` : ''}`, '#facc15')}
@@ -469,11 +756,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
               <p className="text-slate-900 font-bold uppercase tracking-widest">No Profile Data Available</p>
             </div>
           )}
+          </div>
 
           <div className="mt-auto pt-8 border-t border-slate-100 flex justify-between items-center text-[9px] font-bold text-slate-900 uppercase tracking-widest">
             <span>Generated by Scottish Golf Rating Toolkit</span>
             <span>{new Date().toLocaleDateString()}</span>
-            <span>Page {currentIndex + 1} of {tracks.length}</span>
+            <span>Page {currentIndex + 1} of {tracks.length + 1}</span>
           </div>
         </div>
       </div>
@@ -487,7 +775,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
         </button>
         <div className="flex flex-col items-center gap-1">
           <span className="text-white/60 font-bold text-xs uppercase tracking-widest">
-            Hole {currentTrack?.holeNumber || currentIndex + 1} of {tracks.length}
+            {isSummaryPage ? 'Course Summary' : `Hole ${currentTrack?.holeNumber || currentIndex + 1} of ${tracks.length}`}
           </span>
           <button 
             onClick={() => setShowTitleDialog(true)}
@@ -497,8 +785,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           </button>
         </div>
         <button 
-          onClick={() => setCurrentIndex(prev => Math.min(tracks.length - 1, prev + 1))}
-          disabled={currentIndex === tracks.length - 1}
+          onClick={() => setCurrentIndex(prev => Math.min(tracks.length, prev + 1))}
+          disabled={currentIndex === tracks.length}
           className="flex items-center gap-2 text-white font-bold uppercase text-xs tracking-widest disabled:opacity-30"
         >
           Next <ChevronRight size={20} />
