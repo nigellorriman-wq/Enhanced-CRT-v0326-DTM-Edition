@@ -1,5 +1,26 @@
 import axios from 'axios';
 
+function extractElevationFromWmsResponse(data: any): number | null {
+  if (!data || !data.features || !Array.isArray(data.features) || data.features.length === 0) {
+    return null;
+  }
+  
+  for (const feature of data.features) {
+    const props = feature.properties;
+    if (!props) continue;
+    
+    for (const key in props) {
+      const val = parseFloat(props[key]);
+      // Valid elevation range for Scotland (-50 to 5000m)
+      // Exclude common "no data" values like -9999
+      if (!isNaN(val) && val > -50 && val < 5000 && val !== -9999) {
+        return val;
+      }
+    }
+  }
+  return null;
+}
+
 export default async function handler(req: any, res: any) {
   const { lat, lng } = req.query;
 
@@ -7,58 +28,73 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'Missing lat/lng' });
   }
 
+  const latNum = Number(lat);
+  const lngNum = Number(lng);
+
+  // Scotland approximate bounding box
+  const isOutsideScotland = latNum < 54.5 || latNum > 61.0 || lngNum < -9.0 || lngNum > -0.5;
+  if (isOutsideScotland) {
+    return res.status(400).json({ 
+      error: 'Location outside Scotland', 
+      details: 'This toolkit currently only supports LiDAR data for Scotland. The coordinates provided appear to be in another region (e.g. Wales or England).' 
+    });
+  }
+
   try {
     const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
+    const layers = [
+      'scotland:scotland-lidar-1-dtm', 
+      'scotland:scotland-lidar-2-dtm', 
+      'scotland:scotland-lidar-3-dtm', 
+      'scotland:scotland-lidar-4-dtm', 
+      'scotland:scotland-lidar-5-dtm', 
+      'scotland:scotland-lidar-6-dtm'
+    ];
     
-    // Use WMS GetFeatureInfo on the same layers used for the map overlay
-    const params = new URLSearchParams();
-    params.append('service', 'WMS');
-    params.append('version', '1.1.1');
-    params.append('request', 'GetFeatureInfo');
-    // Query all phases to ensure coverage
-    const layers = 'scotland:scotland-lidar-1-dtm,scotland:scotland-lidar-2-dtm,scotland:scotland-lidar-3-dtm,scotland:scotland-lidar-4-dtm,scotland:scotland-lidar-5-dtm,scotland:scotland-lidar-6-dtm';
-    params.append('layers', layers);
-    params.append('query_layers', layers);
-    params.append('x', '50');
-    params.append('y', '50');
-    params.append('width', '101');
-    params.append('height', '101');
-    params.append('srs', 'EPSG:4326');
-    
-    // Slightly larger delta for better reliability at high zoom
-    const delta = 0.0005; 
-    const lngNum = Number(lng);
-    const latNum = Number(lat);
-    // EPSG:4326 in WMS 1.1.1 is lon,lat
-    params.append('bbox', `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`);
-    params.append('info_format', 'application/json');
-    params.append('feature_count', '50'); // Check more features to find data across layers
-
-    const response = await axios.get(wmsUrl, { 
-      params: params,
-      timeout: 10000,
-      headers: { 'Accept': 'application/json' }
-    });
-    
-    // Extract elevation from GeoServer JSON response
     let elevation = null;
-    if (response.data && response.data.features && response.data.features.length > 0) {
-      // Find the first feature that has a valid elevation property
-      for (const feature of response.data.features) {
-        const props = feature.properties;
-        if (!props) continue;
-        
-        // Check all properties for a numeric value that looks like elevation
-        for (const key in props) {
-          const val = parseFloat(props[key]);
-          // Elevation in Scotland is rarely > 1400m or < -10m (bathymetry aside)
-          // -9999 is a common "no data" value
-          if (val !== null && val !== undefined && !isNaN(val) && val > -50 && val < 5000) {
-            elevation = val;
+    const delta = 0.0005; 
+
+    // Try combined first (efficiency)
+    const combinedLayers = layers.join(',');
+    const params = new URLSearchParams({
+      service: 'WMS',
+      version: '1.1.1',
+      request: 'GetFeatureInfo',
+      layers: combinedLayers,
+      query_layers: combinedLayers,
+      info_format: 'application/json',
+      x: '50',
+      y: '50',
+      width: '101',
+      height: '101',
+      srs: 'EPSG:4326',
+      bbox: `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`,
+      feature_count: '50'
+    });
+
+    try {
+      const response = await axios.get(wmsUrl, { params, timeout: 5000 });
+      elevation = extractElevationFromWmsResponse(response.data);
+    } catch (e: any) {
+      // Log error internally if needed
+    }
+
+    // If combined failed, try individual layers
+    if (elevation === null) {
+      for (const layer of layers) {
+        try {
+          const individualParams = new URLSearchParams(params);
+          individualParams.set('layers', layer);
+          individualParams.set('query_layers', layer);
+          
+          const response = await axios.get(wmsUrl, { params: individualParams, timeout: 3000 });
+          elevation = extractElevationFromWmsResponse(response.data);
+          if (elevation !== null) {
             break;
           }
+        } catch (e: any) {
+          // Continue to next layer
         }
-        if (elevation !== null) break;
       }
     }
 
@@ -68,11 +104,6 @@ export default async function handler(req: any, res: any) {
       res.status(404).json({ error: 'No elevation data found at this location' });
     }
   } catch (error: any) {
-    const status = error.response?.status || 500;
-    const data = error.response?.data || error.message;
-    res.status(status).json({ 
-      error: 'Failed to fetch LiDAR data', 
-      details: typeof data === 'object' ? JSON.stringify(data) : data 
-    });
+    res.status(500).json({ error: 'Failed to fetch LiDAR data', details: error.message });
   }
 }
