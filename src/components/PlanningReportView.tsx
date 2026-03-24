@@ -82,6 +82,19 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
 
   const [isTiffReady, setIsTiffReady] = useState(false);
 
+  useEffect(() => {
+    const loadTiffs = async () => {
+      await lidarGeoTiffService.loadAll();
+      setIsTiffReady(true);
+    };
+    loadTiffs();
+  }, []);
+
+  const reportPoint = useMemo(() => {
+    if (isSummaryPage) return tracks[0]?.points[0];
+    return currentTrack?.raterPathPoints?.[0] || currentTrack?.points[0];
+  }, [isSummaryPage, currentTrack, tracks]);
+
   const fetchLidar = async (lat: number, lng: number): Promise<number | null> => {
     // 1. Check offline GeoTIFF data first (highest priority)
     try {
@@ -116,10 +129,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   };
 
   const generateProfile = async (record: SavedRecord) => {
-    if (profiles[record.id]) return;
+    if (profiles[record.id]) {
+      setIsTiffReady(true);
+      return;
+    }
 
     setIsLoadingLidar(true);
-    setIsTiffReady(false);
     
     // Ensure GeoTIFFs are loaded into memory for fast lookup
     await lidarGeoTiffService.loadAll();
@@ -167,9 +182,10 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
         const segmentDist = calculateDistance(p1, p2);
         
         // Determine interval based on GeoTIFF availability and resolution
-        // Use 1m if a 1m tile covers the area, even if it has NoData (we'll try fallbacks)
+        // Use 1m only if we have a 1m tile AND it actually contains data for this point
         const bestRes = lidarGeoTiffService.getBestResolution(p1.lat, p1.lng);
-        const interval = (bestRes !== null && bestRes <= 1) ? 1 : 5;
+        const hasOfflineData = (await lidarGeoTiffService.getElevation(p1.lat, p1.lng)) !== null;
+        const interval = (hasOfflineData && bestRes !== null && bestRes <= 1) ? 1 : 5;
         
         const numSteps = Math.max(1, Math.floor(segmentDist / interval));
 
@@ -527,7 +543,9 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
               <Loader2 className="animate-spin text-amber-600 mb-4" size={48} />
               <p className="text-slate-900 font-bold uppercase tracking-widest text-sm">Fetching LiDAR Terrain Data...</p>
-              <p className="text-slate-900 text-xs mt-2">Sampling path at {!isTiffReady ? '...' : (lidarGeoTiffService.getBestResolution(currentTrack?.points[0]?.lat || 0, currentTrack?.points[0]?.lng || 0) === 1 ? '1m' : '5m')} intervals</p>
+              <p className="text-slate-900 text-xs mt-2">
+                Sampling path at {!isTiffReady ? '...' : ((lidarGeoTiffService.getBestResolution(reportPoint?.lat || 0, reportPoint?.lng || 0) || 5) <= 1 ? '1m' : '5m')} intervals
+              </p>
             </div>
           )}
 
@@ -538,8 +556,10 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 <span className="text-[10px] font-bold text-amber-600 uppercase tracking-[0.3em]">Planning Report Tool</span>
               </div>
               <div className="mt-1.5 flex items-center gap-3">
-                <span className="text-[7px] font-bold text-slate-900 uppercase tracking-widest">LiDAR Source: {!isTiffReady ? 'Checking Cache...' : (lidarGeoTiffService.getBestResolution(currentTrack?.points[0]?.lat || 0, currentTrack?.points[0]?.lng || 0) === 1 ? 'Offline GeoTIFF Cache (1m)' : 'Scottish Government LiDAR (5m)')}</span>
-                {!lidarGeoTiffService.isAreaDownloaded(currentTrack?.points[0]?.lat || 0, currentTrack?.points[0]?.lng || 0) && <span className="text-[7px] font-medium text-blue-500 underline">https://remotesensingdata.gov.scot/</span>}
+                <span className="text-[7px] font-bold text-slate-900 uppercase tracking-widest">
+                  LiDAR Source: {!isTiffReady ? 'Checking Cache...' : ((lidarGeoTiffService.getBestResolution(reportPoint?.lat || 0, reportPoint?.lng || 0) || 5) <= 1 ? 'Offline GeoTIFF Cache (1m)' : 'Scottish Government LiDAR (5m)')}
+                </span>
+                {!lidarGeoTiffService.isAreaDownloaded(reportPoint?.lat || 0, reportPoint?.lng || 0) && <span className="text-[7px] font-medium text-blue-500 underline">https://remotesensingdata.gov.scot/</span>}
               </div>
             </div>
             <div className="flex flex-col items-end text-right">
