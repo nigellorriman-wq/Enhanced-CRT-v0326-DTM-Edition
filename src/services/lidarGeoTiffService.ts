@@ -427,6 +427,30 @@ class LidarGeoTiffService {
   }
 
   /**
+   * Returns the best available resolution for a given point
+   */
+  getBestResolution(lat: number, lng: number): number | null {
+    if (this.loadedTiffs.size === 0) return null;
+    
+    const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+    let bestRes = Infinity;
+    let found = false;
+    
+    for (const entry of this.loadedTiffs.values()) {
+      const [minX, minY, maxX, maxY] = entry.image.getBoundingBox();
+      if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
+        const res = entry.image.getResolution()[0];
+        if (res < bestRes) {
+          bestRes = res;
+          found = true;
+        }
+      }
+    }
+    
+    return found ? bestRes : null;
+  }
+
+  /**
    * Deletes all GeoTIFFs that haven't been explicitly saved
    */
   async clearUnsaved(): Promise<void> {
