@@ -16,14 +16,35 @@ export interface OfflineGeoTiff {
   };
   corners?: [number, number][];
   resolution: number; // e.g. 0.5, 1, 2 (metres)
+  phase?: number; // e.g. 1, 2, 3
   blob: Blob;
   addedAt: number;
   saved?: boolean;
 }
 
 class LidarGeoTiffService {
-  private loadedTiffs: Map<string, { tiff: any; image: any; pool: any; minMax?: { min: number; max: number } }> = new Map();
+  private loadedTiffs: Map<string, { tiff: any; image: any; pool: any; minMax?: { min: number; max: number }; noData?: number | null }> = new Map();
   private globalAltitudeRange: { min: number; max: number } | null = null;
+
+  private isValidElevation(val: number, noData?: number | null): boolean {
+    if (val === null || val === undefined || isNaN(val)) return false;
+    
+    // Exact match for common NoData values
+    if (val === -9999 || val === -3.4028234663852886e+38) return false;
+    
+    // Match against metadata NoData value
+    if (noData !== undefined && noData !== null) {
+      // Use a small epsilon for float comparison
+      if (Math.abs(val - noData) < 0.0001) return false;
+    }
+    
+    // Extreme values that are physically impossible for Scottish terrain
+    // (Lowest point is sea level, highest is 1344m)
+    // We allow a bit of range for bathymetry or slight errors, but -10000m is definitely NoData
+    if (val < -10000 || val > 10000) return false;
+    
+    return true;
+  }
 
   setGlobalAltitudeRange(min: number, max: number) {
     this.globalAltitudeRange = { min, max };
@@ -32,6 +53,11 @@ class LidarGeoTiffService {
 
   getGlobalAltitudeRange() {
     return this.globalAltitudeRange;
+  }
+
+  clearGlobalAltitudeRange() {
+    this.globalAltitudeRange = null;
+    console.log('[LiDAR] Global altitude range cleared');
   }
 
   async getMinMax(id: string): Promise<{ min: number; max: number } | null> {
@@ -44,20 +70,31 @@ class LidarGeoTiffService {
 
     if (entry.minMax) return entry.minMax;
 
-    const { image } = entry;
+    const { image, noData } = entry;
     try {
       const rasters = await image.readRasters();
-      if (!rasters || rasters.length === 0) return null;
-      const data = rasters[0] as any;
-
+      if (!rasters) return null;
+      
+      const numBands = Array.isArray(rasters) ? rasters.length : 1;
       let min = Infinity;
       let max = -Infinity;
-      for (let i = 0; i < data.length; i++) {
-        const val = data[i];
-        if (val !== -9999 && val !== -3.4028234663852886e+38 && !isNaN(val)) {
-          if (val < min) min = val;
-          if (val > max) max = val;
+      
+      for (let b = 0; b < numBands; b++) {
+        const data = Array.isArray(rasters) ? rasters[b] : rasters;
+        let validCount = 0;
+        
+        for (let i = 0; i < data.length; i++) {
+          const val = data[i];
+          if (this.isValidElevation(val, noData)) {
+            if (val < min) min = val;
+            if (val > max) max = val;
+            validCount++;
+          }
         }
+        
+        console.log(`[LiDAR] Stats for ${id} (Band ${b}): Valid pixels: ${validCount}/${data.length}, Min: ${min}, Max: ${max}, NoData: ${noData}`);
+        
+        if (validCount > 0) break; // Found data in this band, stop looking
       }
       
       if (min !== Infinity) {
@@ -121,6 +158,7 @@ class LidarGeoTiffService {
 
     const tiff = await fromGeoTIFF.fromBlob(blob);
     const image = await tiff.getImage();
+    const noData = image.getGDALNoData();
     const [minX, minY, maxX, maxY] = image.getBoundingBox();
     
     // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
@@ -151,7 +189,7 @@ class LidarGeoTiffService {
     
     // Also load into memory immediately
     const pool = new fromGeoTIFF.Pool();
-    this.loadedTiffs.set(url, { tiff, image, pool });
+    this.loadedTiffs.set(url, { tiff, image, pool, noData });
   }
 
   /**
@@ -161,6 +199,7 @@ class LidarGeoTiffService {
     const tiffId = id || `imported_${Date.now()}_${name.replace(/[^a-z0-9]/gi, '_')}`;
     const tiff = await fromGeoTIFF.fromBlob(blob);
     const image = await tiff.getImage();
+    const noData = image.getGDALNoData();
     const [minX, minY, maxX, maxY] = image.getBoundingBox();
     
     // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
@@ -175,6 +214,10 @@ class LidarGeoTiffService {
     const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
     
     const resolution = image.getResolution()[0];
+    
+    // Extract phase from name if possible (e.g. "LiDAR Ph2 1m - NJ1842")
+    const phaseMatch = name.match(/Ph(\d+)/i);
+    const phase = phaseMatch ? parseInt(phaseMatch[1]) : 1;
 
     const offlineData: OfflineGeoTiff = {
       id: tiffId,
@@ -182,6 +225,7 @@ class LidarGeoTiffService {
       bounds: { minLat, maxLat, minLng, maxLng },
       corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]],
       resolution,
+      phase,
       blob,
       addedAt: Date.now()
     };
@@ -190,7 +234,7 @@ class LidarGeoTiffService {
     
     // Also load into memory immediately
     const pool = new fromGeoTIFF.Pool();
-    this.loadedTiffs.set(tiffId, { tiff, image, pool });
+    this.loadedTiffs.set(tiffId, { tiff, image, pool, noData });
     return tiffId;
   }
 
@@ -248,8 +292,9 @@ class LidarGeoTiffService {
         if (!this.loadedTiffs.has(data.id)) {
           const tiff = await fromGeoTIFF.fromBlob(data.blob);
           const image = await tiff.getImage();
+          const noData = image.getGDALNoData();
           const pool = new fromGeoTIFF.Pool();
-          this.loadedTiffs.set(data.id, { tiff, image, pool });
+          this.loadedTiffs.set(data.id, { tiff, image, pool, noData });
           
           // Fallback for missing corners in older stored data
           if (!data.corners) {
@@ -277,14 +322,21 @@ class LidarGeoTiffService {
 
     if (this.loadedTiffs.size === 0) return null;
 
-    // Sort by resolution (highest first)
+    // Sort by resolution (highest first), then phase (latest first)
     const sortedTiffs = Array.from(this.loadedTiffs.entries()).sort((a, b) => {
       const resA = a[1].image.getResolution()[0];
       const resB = b[1].image.getResolution()[0];
-      return resA - resB;
+      if (resA !== resB) return resA - resB;
+      
+      // Secondary sort by phase (latest first)
+      // We can extract phase from the ID or name if it's not in metadata
+      const phaseA = parseInt(a[0].match(/ph(\d+)/i)?.[1] || '1');
+      const phaseB = parseInt(b[0].match(/ph(\d+)/i)?.[1] || '1');
+      return phaseB - phaseA;
     });
 
-    for (const [id, { image }] of sortedTiffs) {
+    for (const [id, entry] of sortedTiffs) {
+      const { image, noData } = entry;
       const [minX, minY, maxX, maxY] = image.getBoundingBox();
       
       // Convert input WGS84 lat/lng to BNG for lookup
@@ -302,22 +354,28 @@ class LidarGeoTiffService {
         const x = Math.floor((e - origin[0]) / res[0]);
         const y = Math.floor((origin[1] - n) / Math.abs(res[1]));
 
-        console.log(`[LiDAR] Tile ${id} match. BNG: ${e.toFixed(0)}, ${n.toFixed(0)}. Origin: ${origin[0]}, ${origin[1]}. Res: ${res[0]}, ${res[1]}. Calc Pixel: x=${x}, y=${y}`);
-
         if (x >= 0 && x < width && y >= 0 && y < height) {
           try {
             const window = [x, y, x + 1, y + 1];
-            const data = await image.readRasters({ window });
-            if (data && data.length > 0 && data[0].length > 0) {
-              const elevation = data[0][0];
+            const rasters = await image.readRasters({ window });
+            if (rasters) {
+              const numBands = Array.isArray(rasters) ? rasters.length : 1;
               
-              // Check for NoData values (common in GeoTIFFs)
-              if (elevation !== -9999 && elevation !== -3.4028234663852886e+38 && !isNaN(elevation)) {
-                console.log(`[LiDAR] SUCCESS: Offline elevation for ${lat.toFixed(6)}, ${lng.toFixed(6)} is ${elevation.toFixed(2)}m (Source: ${id})`);
-                return elevation;
-              } else {
-                console.log(`[LiDAR] NoData value (${elevation}) at ${lat}, ${lng} in tile ${id}`);
+              // Try each band until we find a valid elevation
+              for (let b = 0; b < numBands; b++) {
+                const data = Array.isArray(rasters) ? rasters[b] : rasters;
+                if (data.length > 0) {
+                  const elevation = data[0];
+                  console.log(`[LiDAR] Raw elevation at ${lat}, ${lng} in tile ${id} (Band ${b}): ${elevation} (NoData: ${noData})`);
+                  
+                  if (this.isValidElevation(elevation, noData)) {
+                    console.log(`[LiDAR] SUCCESS: Offline elevation for ${lat.toFixed(6)}, ${lng.toFixed(6)} is ${elevation.toFixed(2)}m (Source: ${id}, Band: ${b})`);
+                    return elevation;
+                  }
+                }
               }
+              
+              console.log(`[LiDAR] No valid elevation found in any of the ${numBands} bands at ${lat}, ${lng} in tile ${id}`);
             }
           } catch (e) {
             console.error('[LiDAR] Error reading raster for elevation', e);
@@ -328,7 +386,25 @@ class LidarGeoTiffService {
       }
     }
 
-    console.log(`[LiDAR] No offline tile found covering ${lat}, ${lng}`);
+    if (this.loadedTiffs.size > 0) {
+      // Check if we actually found any tile covering this area (even if it had NoData)
+      const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+      let tileFound = false;
+      for (const entry of this.loadedTiffs.values()) {
+        const [minX, minY, maxX, maxY] = entry.image.getBoundingBox();
+        if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
+          tileFound = true;
+          break;
+        }
+      }
+      
+      if (tileFound) {
+        console.log(`[LiDAR] No valid elevation found in any offline tile covering ${lat}, ${lng}`);
+      } else {
+        console.log(`[LiDAR] No offline tile found covering ${lat}, ${lng}`);
+      }
+    }
+    
     return null;
   }
 
@@ -354,6 +430,7 @@ class LidarGeoTiffService {
    * Deletes all GeoTIFFs that haven't been explicitly saved
    */
   async clearUnsaved(): Promise<void> {
+    this.clearGlobalAltitudeRange();
     const allKeys = await keys();
     const tiffKeys = allKeys.filter(k => typeof k === 'string' && k.startsWith('geotiff_'));
     for (const key of tiffKeys) {
@@ -384,10 +461,20 @@ class LidarGeoTiffService {
     }
     if (!entry) return null;
 
-    const { image } = entry;
-    const width = image.getWidth();
-    const height = image.getHeight();
+    const { image, noData } = entry;
+    let width = image.getWidth();
+    let height = image.getHeight();
     const [minX, minY, maxX, maxY] = image.getBoundingBox();
+    
+    // Downsample if too large for canvas (max 4096 for performance and compatibility)
+    const MAX_CANVAS_SIZE = 4096;
+    let sampleScale = 1;
+    if (width > MAX_CANVAS_SIZE || height > MAX_CANVAS_SIZE) {
+      sampleScale = Math.max(width / MAX_CANVAS_SIZE, height / MAX_CANVAS_SIZE);
+      width = Math.floor(width / sampleScale);
+      height = Math.floor(height / sampleScale);
+      console.log(`[LiDAR] Downsampling overlay for ${id} from original size to ${width}x${height} (scale: ${sampleScale.toFixed(2)})`);
+    }
     
     // Convert all 4 BNG corners back to WGS84 for Leaflet overlay
     // This ensures we use the full envelope to eliminate gaps between tiles
@@ -404,49 +491,78 @@ class LidarGeoTiffService {
     // Read all rasters
     let rasters;
     try {
-      rasters = await image.readRasters();
-    } catch (e) {
-      console.error('Failed to read rasters for overlay', e);
-      return null;
-    }
-    
-    if (!rasters || rasters.length === 0) return null;
-    const data = rasters[0] as any;
-
-    // Find min/max for normalization
-    let localMin = Infinity;
-    let localMax = -Infinity;
-    for (let i = 0; i < data.length; i++) {
-      const val = data[i];
-      if (val !== -9999 && val !== -3.4028234663852886e+38 && !isNaN(val)) {
-        if (val < localMin) localMin = val;
-        if (val > localMax) localMax = val;
+      console.log(`[LiDAR] Reading rasters for ${id} (${width}x${height})...`);
+      rasters = await image.readRasters({ width, height });
+      
+      if (!rasters) {
+        console.error(`[LiDAR] No rasters found for ${id}`);
+        return null;
       }
-    }
 
-    if (localMin === Infinity) {
-      return null;
-    }
+      const numBands = Array.isArray(rasters) ? rasters.length : 1;
+      let data = Array.isArray(rasters) ? rasters[0] : rasters;
+      let localMin = Infinity;
+      let localMax = -Infinity;
+      let validCount = 0;
+      let activeBand = 0;
 
-    // Use global range if available, otherwise use local min/max
-    const min = this.globalAltitudeRange?.min ?? localMin;
-    const max = this.globalAltitudeRange?.max ?? localMax;
+      // Try each band until we find one with valid data
+      for (let b = 0; b < numBands; b++) {
+        const bandData = Array.isArray(rasters) ? rasters[b] : rasters;
+        let bandMin = Infinity;
+        let bandMax = -Infinity;
+        let bandValidCount = 0;
 
-    if (min === max) {
-      return null; // Avoid division by zero
-    }
+        for (let i = 0; i < bandData.length; i++) {
+          const val = bandData[i];
+          if (this.isValidElevation(val, noData)) {
+            if (val < bandMin) bandMin = val;
+            if (val > bandMax) bandMax = val;
+            bandValidCount++;
+          }
+        }
 
-    // Create canvas
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { alpha: true });
-    if (!ctx) return null;
+        console.log(`[LiDAR] Band ${b} stats for ${id}: Valid pixels: ${bandValidCount}/${bandData.length}, Min: ${bandMin}, Max: ${bandMax}, NoData: ${noData}`);
 
-    const imageData = ctx.createImageData(width, height);
-    const d = imageData.data;
+        if (bandValidCount > 0) {
+          data = bandData;
+          localMin = bandMin;
+          localMax = bandMax;
+          validCount = bandValidCount;
+          activeBand = b;
+          break; // Use this band
+        }
+      }
 
-    console.log(`[LiDAR] Generating overlay for ${id}. Local range: ${localMin.toFixed(1)}m - ${localMax.toFixed(1)}m. Using range: ${min.toFixed(1)}m - ${max.toFixed(1)}m`);
+      if (validCount === 0) {
+        const firstFew = Array.from(data.slice(0, 10));
+        console.warn(`[LiDAR] No valid elevation data found in any of the ${numBands} bands for ${id} (all pixels are NoData). First 10 values: ${JSON.stringify(firstFew)}`);
+        return null;
+      }
+
+      // Use global range if available, otherwise use local min/max
+      let min = this.globalAltitudeRange?.min ?? localMin;
+      let max = this.globalAltitudeRange?.max ?? localMax;
+
+      if (min === max) {
+        console.log(`[LiDAR] Min and Max are equal (${min}), using small offset for visualization`);
+        max = min + 1;
+      }
+
+      // Create canvas
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { alpha: true });
+      if (!ctx) {
+        console.error(`[LiDAR] Failed to get 2D context for canvas`);
+        return null;
+      }
+
+      const imageData = ctx.createImageData(width, height);
+      const d = imageData.data;
+
+      console.log(`[LiDAR] Generating overlay for ${id} (Band ${activeBand}). Local range: ${localMin.toFixed(1)}m - ${localMax.toFixed(1)}m. Using range: ${min.toFixed(1)}m - ${max.toFixed(1)}m`);
 
     // Pre-calculate color lookup table (256 levels) for performance
     const lut = new Uint8Array(256 * 3);
@@ -468,9 +584,8 @@ class LidarGeoTiffService {
     const de_row = (e_sw - e_nw) / height;
     const dn_row = (n_sw - n_nw) / height;
 
-    const res = image.getResolution();
-    const resX = res[0];
-    const resY = Math.abs(res[1]);
+    const resX = (maxX - minX) / width;
+    const resY = (maxY - minY) / height;
 
     for (let r = 0; r < height; r++) {
       let curr_e = e_nw + r * de_row;
@@ -484,7 +599,7 @@ class LidarGeoTiffService {
           const tiffIdx = y * width + x;
           const val = data[tiffIdx];
           
-          if (val === -9999 || val === -3.4028234663852886e+38 || isNaN(val)) {
+          if (!this.isValidElevation(val, noData)) {
             d[canvasIdx + 3] = 0;
           } else {
             const normalized = Math.max(0, Math.min(1, (val - min) / (max - min)));
@@ -503,28 +618,32 @@ class LidarGeoTiffService {
       }
     }
 
-    ctx.putImageData(imageData, 0, 0);
-    const dataUrl = canvas.toDataURL('image/png');
-    
-    // Try to find corners from the original data if possible
-    let finalCorners = [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]] as [number, number][];
-    try {
-      const allKeys = await keys();
-      const key = allKeys.find(k => typeof k === 'string' && k.endsWith(id));
-      if (key) {
-        const data = await get<OfflineGeoTiff>(key);
-        if (data?.corners) finalCorners = data.corners;
+      ctx.putImageData(imageData, 0, 0);
+      const dataUrl = canvas.toDataURL('image/png');
+      
+      // Try to find corners from the original data if possible
+      let finalCorners = [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]] as [number, number][];
+      try {
+        const allKeys = await keys();
+        const key = allKeys.find(k => typeof k === 'string' && k.endsWith(id));
+        if (key) {
+          const data = await get<OfflineGeoTiff>(key);
+          if (data?.corners) finalCorners = data.corners;
+        }
+      } catch (e) {
+        // Fallback to calculated corners
       }
+      
+      return {
+        dataUrl,
+        bounds: [[minLat, minLng], [maxLat, maxLng]],
+        corners: finalCorners,
+        timestamp: Date.now()
+      };
     } catch (e) {
-      // Fallback to calculated corners
+      console.error(`[LiDAR] Failed to generate overlay for ${id}:`, e);
+      return null;
     }
-    
-    return {
-      dataUrl,
-      bounds: [[minLat, minLng], [maxLat, maxLng]],
-      corners: finalCorners,
-      timestamp: Date.now()
-    };
   }
 
   public getColorForHeight(t: number) {

@@ -1778,20 +1778,24 @@ const TerrainManager: React.FC<{
       const tiles = await lidarCatalogService.findTiles(searchBounds);
       onDiscoveredTilesChange(tiles);
       if (tiles.length > 0) {
-        // Smart selection: For each grid square, pick the latest phase at highest resolution
-        const gridMap = new Map<string, LidarTile>();
+        // Smart selection: For each grid square, pick ALL phases at the highest available resolution
+        // This ensures fallbacks are available if the latest phase is incomplete (null levels)
+        const gridMap = new Map<string, LidarTile[]>();
         tiles.forEach(tile => {
-          const existing = gridMap.get(tile.gridRef);
-          if (!existing) {
-            gridMap.set(tile.gridRef, tile);
-          } else {
-            // Prioritize resolution (lower value is better), then phase (higher value is better)
-            if (tile.resolution < existing.resolution || (tile.resolution === existing.resolution && tile.phase > existing.phase)) {
-              gridMap.set(tile.gridRef, tile);
-            }
-          }
+          const existing = gridMap.get(tile.gridRef) || [];
+          gridMap.set(tile.gridRef, [...existing, tile]);
         });
-        onSetSelection(new Set(Array.from(gridMap.values()).map(t => t.id)));
+
+        const selectedIds = new Set<string>();
+        gridMap.forEach((groupTiles) => {
+          const bestRes = Math.min(...groupTiles.map(t => t.resolution));
+          groupTiles.forEach(t => {
+            if (t.resolution === bestRes) {
+              selectedIds.add(t.id);
+            }
+          });
+        });
+        onSetSelection(selectedIds);
       }
     } catch (err) {
       setError('Failed to discover tiles');
@@ -2251,6 +2255,7 @@ const App: React.FC = () => {
   const [currentZoom, setCurrentZoom] = useState(2);
   const tilesLoadedCount = React.useRef(0);
   const [lidarStatus, setLidarStatus] = useState<'idle' | 'loading' | 'error' | 'available' | 'offline' | 'geotiff'>('idle');
+  const [elevationSource, setElevationSource] = useState<string>('Unknown');
   const [lidarGridOpacity, setLidarGridOpacity] = useState(1.0);
   const [geoTiffOpacities, setGeoTiffOpacities] = useState<Record<string, number>>({});
   const [isOverlayLoading, setIsOverlayLoading] = useState<Record<string, boolean>>({});
@@ -2303,17 +2308,16 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if ((!isFollowing || isPlanningSession) && mapCenter) {
-      // Update status immediately if we are in a downloaded area
-      if (lidarGeoTiffService.isAreaDownloaded(mapCenter.lat, mapCenter.lng)) {
-        setLidarStatus('geotiff');
-      }
-
       const timer = setTimeout(async () => {
         const alt = await fetchLidarElevation(mapCenter.lat, mapCenter.lng);
         setPos(prev => {
           if (isFollowing && !isPlanningSession) return prev;
           // Only update if moved more than 0.2m to avoid jitter
           if (prev && L.latLng(prev.lat, prev.lng).distanceTo(L.latLng(mapCenter.lat, mapCenter.lng)) < 0.2 && prev.alt === alt) return prev;
+          
+          // Determine source string for display
+          const sourceStr: "GPS" | "LiDAR" | "Manual" | "Manual/LiDAR" | undefined = 'Manual/LiDAR';
+          
           return {
             lat: mapCenter.lat,
             lng: mapCenter.lng,
@@ -2321,7 +2325,7 @@ const App: React.FC = () => {
             timestamp: Date.now(),
             alt: alt,
             altAccuracy: alt !== null ? 0.2 : null,
-            source: 'Manual/LiDAR'
+            source: sourceStr
           };
         });
       }, 250);
@@ -2336,27 +2340,23 @@ const App: React.FC = () => {
       return null;
     }
 
-    // Check if area is downloaded to set status immediately
-    const isDownloaded = lidarGeoTiffService.isAreaDownloaded(lat, lng);
-    if (isDownloaded) {
-      setLidarStatus('geotiff');
-    }
-
     // 1. Check Offline GeoTIFFs first (highest priority)
     try {
       const offlineElev = await lidarGeoTiffService.getElevation(lat, lng);
       if (offlineElev !== null) {
         console.log(`[LiDAR] Using OFFLINE GeoTIFF data for ${lat.toFixed(6)}, ${lng.toFixed(6)}: ${offlineElev.toFixed(2)}m`);
         setLidarStatus('geotiff');
+        setElevationSource('Offline GeoTIFF');
         return offlineElev;
       }
+      console.log(`[LiDAR] No valid OFFLINE data for ${lat.toFixed(6)}, ${lng.toFixed(6)}. Falling back to ONLINE API...`);
     } catch (e) {
       console.error('[LiDAR] Failed to query offline GeoTIFF', e);
     }
 
     const fetchId = Date.now();
     lidarFetchRef.current = fetchId;
-    setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'loading');
+    setLidarStatus('loading');
     setLidarDebug(prev => ({ ...prev, coords: { lat, lng }, response: 'Waiting for response...', url: '/api/lidar' }));
     
     try {
@@ -2377,7 +2377,8 @@ const App: React.FC = () => {
         if (data && data.elevation !== undefined) {
           const val = parseFloat(String(data.elevation).trim());
           if (!isNaN(val)) {
-            setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'available');
+            setLidarStatus('available');
+            setElevationSource('Online API (JNCC)');
             return val;
           }
         }
@@ -2387,7 +2388,8 @@ const App: React.FC = () => {
           const res = data.results[0];
           const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
           if (!isNaN(val)) {
-            setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'available');
+            setLidarStatus('available');
+            setElevationSource('Online API (ArcGIS)');
             return val;
           }
         }
@@ -2399,11 +2401,11 @@ const App: React.FC = () => {
         throw new Error("Expected JSON response but received something else.");
       }
       
-      setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'error');
+      setLidarStatus('error');
       return null;
     } catch (error: any) {
       if (lidarFetchRef.current === fetchId) {
-        setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'error');
+        setLidarStatus('error');
         setLidarDebug(prev => ({ ...prev, response: `PROXY ERROR: ${error.message}` }));
       }
       return null;
@@ -2418,7 +2420,14 @@ const App: React.FC = () => {
   const prevMapStyle = useRef(mapStyle);
   useEffect(() => {
     const syncOverlays = async () => {
-      if (mapStyle === 'LiDAR DTM' && offlineGeoTiffs.length > 0) {
+      if (mapStyle === 'LiDAR DTM') {
+        if (offlineGeoTiffs.length === 0) {
+          console.log('[LiDAR] No offline GeoTIFFs, clearing overlays');
+          setActiveGeoTiffOverlays({});
+          lidarGeoTiffService.clearGlobalAltitudeRange();
+          return;
+        }
+
         console.log(`[LiDAR] Map style is LiDAR DTM, syncing ${offlineGeoTiffs.length} offline overlays`);
         
         // 1. Calculate global range for all offline tiles to ensure consistent color rendering
@@ -2437,6 +2446,8 @@ const App: React.FC = () => {
         
         if (found) {
           lidarGeoTiffService.setGlobalAltitudeRange(globalMin, globalMax);
+        } else {
+          lidarGeoTiffService.clearGlobalAltitudeRange();
         }
 
         // 2. Generate/Update overlays for all offline tiles
@@ -2452,7 +2463,7 @@ const App: React.FC = () => {
           }
         }
         setActiveGeoTiffOverlays(newOverlays);
-      } else if (prevMapStyle.current === 'LiDAR DTM' && mapStyle !== 'LiDAR DTM') {
+      } else if (prevMapStyle.current === 'LiDAR DTM') {
         // Deactivate overlays ONLY if we just switched away from LiDAR DTM
         setActiveGeoTiffOverlays({});
         loadingOverlays.current.clear();
@@ -3349,7 +3360,7 @@ const App: React.FC = () => {
                       load: () => { 
                         setLidarLayerLoading(false); 
                         tilesLoadedCount.current += 1;
-                        setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'available');
+                        setLidarStatus('available');
                       },
                       tileerror: () => { 
                         // Only set error if we haven't loaded ANY tiles yet
@@ -3688,6 +3699,12 @@ const App: React.FC = () => {
                   </button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-6 space-y-6 font-mono text-xs select-text">
+                  <section className="select-text">
+                    <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Elevation Source</h4>
+                    <div className="bg-black/40 p-3 rounded-xl border border-white/5 select-text font-bold text-emerald-400">
+                      {elevationSource}
+                    </div>
+                  </section>
                   <section className="select-text">
                     <h4 className="text-blue-400 font-bold uppercase mb-2 text-[10px] tracking-widest">Query Coordinates</h4>
                     <div className="bg-black/40 p-3 rounded-xl border border-white/5 select-text">
