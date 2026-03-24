@@ -1766,6 +1766,15 @@ const TerrainManager: React.FC<{
         return;
       }
 
+      // Scotland boundary check
+      const centerLat = (searchBounds.minLat + searchBounds.maxLat) / 2;
+      const centerLng = (searchBounds.minLng + searchBounds.maxLng) / 2;
+      if (centerLat < 54.5 || centerLat > 61.0 || centerLng < -8.5 || centerLng > -0.5) {
+        setError('LiDAR data is currently only available for Scotland. Please search within Scotland.');
+        setIsSearching(false);
+        return;
+      }
+
       const tiles = await lidarCatalogService.findTiles(searchBounds);
       onDiscoveredTilesChange(tiles);
       if (tiles.length > 0) {
@@ -2321,6 +2330,12 @@ const App: React.FC = () => {
   }, [mapCenter, isFollowing, isPlanningSession]);
 
   const fetchLidarElevation = async (lat: number, lng: number): Promise<number | null> => {
+    // Scotland boundary check
+    if (lat < 54.5 || lat > 61.0 || lng < -8.5 || lng > -0.5) {
+      console.log(`[LiDAR] Skipping search for coordinates outside Scotland: ${lat}, ${lng}`);
+      return null;
+    }
+
     // Check if area is downloaded to set status immediately
     const isDownloaded = lidarGeoTiffService.isAreaDownloaded(lat, lng);
     if (isDownloaded) {
@@ -2546,6 +2561,13 @@ const App: React.FC = () => {
           timestamp: Date.now(),
           source: 'GPS'
         };
+
+        // Scotland boundary check for initial fix
+        const isOutsideScotland = newPos.lat < 54.5 || newPos.lat > 61.0 || newPos.lng < -8.5 || newPos.lng > -0.5;
+        if (!prev && isOutsideScotland && newPos.accuracy > 100) {
+          // If the first fix is outside Scotland and not very accurate, it's likely a default browser location (like Wales)
+          return null;
+        }
 
         if (!prev) return newPos;
 
