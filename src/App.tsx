@@ -3205,7 +3205,7 @@ const App: React.FC = () => {
             <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer">
               <div className="w-16 h-16 bg-amber-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-amber-600/40"><ChartSpline size={28} /></div>
               <h2 className="text-2xl font-bold mb-2 uppercase text-amber-500">Planning Report Tool</h2>
-              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Generate 3D profiles for planned holes</p>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Generate 3D profiles for surveyed or planned holes</p>
               <input type="file" accept=".kml" onChange={importKMLForPlanningReport} className="hidden" />
             </label>
             <button onClick={() => { setViewingRecord(null); setView('stimp'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
