@@ -3229,7 +3229,18 @@ const App: React.FC = () => {
           <footer className="mt-auto pb-6 pt-12">
             {history.length > 0 && (
               <div className="mb-6">
-                <div className="flex items-center gap-2 px-2 mb-4"><Info size={12} className="text-blue-400" /><span className="text-[10px] font-bold tracking-[0.2em] text-white uppercase">Assessment History</span></div>
+                <div className="flex items-center justify-between px-2 mb-4">
+                  <div className="flex items-center gap-2">
+                    <Info size={12} className="text-blue-400" />
+                    <span className="text-[10px] font-bold tracking-[0.2em] text-white uppercase">Assessment History</span>
+                  </div>
+                  <button 
+                    onClick={() => { setHistory([]); localStorage.removeItem('scottish_golf_rating_toolkit_final'); }}
+                    className="text-[8px] font-bold text-white uppercase tracking-widest border border-rose-500/50 bg-rose-500/10 px-2 py-1 rounded-full active:bg-rose-500/30 transition-colors"
+                  >
+                    Clear cache
+                  </button>
+                </div>
                 <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar">
                   {history.map(item => (
                     <div key={item.id} className="relative shrink-0">
