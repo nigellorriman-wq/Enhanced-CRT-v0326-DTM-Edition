@@ -73,6 +73,38 @@ const SelectionHandler = ({ active, onSelectionComplete }: { active: boolean, on
     }
   }, [active, map]);
 
+  useEffect(() => {
+    if (!active) return;
+
+    const handleTouchStart = (e: any) => {
+      setStartPos(e.latlng);
+      setCurrentPos(e.latlng);
+    };
+
+    const handleTouchMove = (e: any) => {
+      if (!startPos) return;
+      setCurrentPos(e.latlng);
+    };
+
+    const handleTouchEnd = (e: any) => {
+      if (!startPos) return;
+      const bounds = L.latLngBounds(startPos, e.latlng);
+      onSelectionComplete(bounds);
+      setStartPos(null);
+      setCurrentPos(null);
+    };
+
+    map.on('touchstart', handleTouchStart);
+    map.on('touchmove', handleTouchMove);
+    map.on('touchend', handleTouchEnd);
+
+    return () => {
+      map.off('touchstart', handleTouchStart);
+      map.off('touchmove', handleTouchMove);
+      map.off('touchend', handleTouchEnd);
+    };
+  }, [active, map, startPos, onSelectionComplete]);
+
   useMapEvents({
     mousedown(e) {
       if (!active) return;
@@ -3675,6 +3707,30 @@ const App: React.FC = () => {
                   </>
                 )}
               </MapContainer>
+              {selectionMode && (
+                <div className="absolute inset-x-0 top-0 z-[2500] p-4 flex flex-col items-center pointer-events-none">
+                  <div className="bg-slate-900/90 backdrop-blur-md border border-blue-500/50 rounded-2xl p-4 shadow-2xl flex flex-col items-center gap-3 pointer-events-auto max-w-[280px] text-center">
+                    <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center shadow-lg shadow-blue-600/20">
+                      <MousePointer2 size={20} className="text-white" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-white uppercase tracking-widest mb-1">Select Search Area</p>
+                      <p className="text-[10px] text-blue-200 leading-relaxed">
+                        Drag your finger or mouse on the map to draw a box over the area you want to search.
+                      </p>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setSelectionMode(false);
+                        setShowTerrainManager(true);
+                      }}
+                      className="w-full bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-bold py-2 rounded-xl border border-white/10 uppercase tracking-widest transition-colors"
+                    >
+                      Cancel Selection
+                    </button>
+                  </div>
+                </div>
+              )}
               {!isFollowing && (
                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[2000] pointer-events-none">
                   <div className="relative flex items-center justify-center">
