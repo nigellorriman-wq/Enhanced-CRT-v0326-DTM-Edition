@@ -1808,9 +1808,7 @@ const TerrainManager: React.FC<{
     setIsDownloading(true);
     setError(null);
     try {
-      await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
-      const all = await lidarGeoTiffService.loadAll();
-      const downloaded = all.find(t => t.id === tile.url);
+      const downloaded = await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
       if (downloaded) onGeoTiffDownload(downloaded);
     } catch (err: any) {
       console.error(`Failed to download ${tile.name}`, err);
@@ -1827,9 +1825,7 @@ const TerrainManager: React.FC<{
       for (const fallback of fallbacks) {
         try {
           console.log(`Trying fallback for ${tile.gridRef}: ${fallback.name}`);
-          await lidarGeoTiffService.downloadAndStore(fallback.url, fallback.name);
-          const all = await lidarGeoTiffService.loadAll();
-          const downloaded = all.find(t => t.id === fallback.url);
+          const downloaded = await lidarGeoTiffService.downloadAndStore(fallback.url, fallback.name);
           if (downloaded) onGeoTiffDownload(downloaded);
           fallbackSuccess = true;
           break;
@@ -1853,15 +1849,14 @@ const TerrainManager: React.FC<{
     setIsDownloading(true);
     setError(null);
     let successCount = 0;
-    const downloadedUrls: string[] = [];
     
     try {
       for (let i = 0; i < selectedTiles.length; i++) {
         const tile = selectedTiles[i];
         setProgress(Math.round(((i + 1) / selectedTiles.length) * 100));
         try {
-          await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
-          downloadedUrls.push(tile.url);
+          const downloaded = await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
+          if (downloaded) onGeoTiffDownload(downloaded);
           successCount++;
         } catch (e) {
           console.error(`Failed to download ${tile.name}`, e);
@@ -1877,8 +1872,8 @@ const TerrainManager: React.FC<{
           for (const fallback of fallbacks) {
             try {
               console.log(`Trying fallback for ${tile.gridRef}: ${fallback.name}`);
-              await lidarGeoTiffService.downloadAndStore(fallback.url, fallback.name);
-              downloadedUrls.push(fallback.url);
+              const downloaded = await lidarGeoTiffService.downloadAndStore(fallback.url, fallback.name);
+              if (downloaded) onGeoTiffDownload(downloaded);
               successCount++;
               fallbackSuccess = true;
               break;
@@ -1892,13 +1887,6 @@ const TerrainManager: React.FC<{
           }
         }
       }
-      
-      const all = await lidarGeoTiffService.loadAll();
-      all.forEach(tiff => {
-        if (downloadedUrls.includes(tiff.id)) {
-          onGeoTiffDownload(tiff);
-        }
-      });
       
       if (successCount < selectedTiles.length) {
         setError(`Downloaded ${successCount} of ${selectedTiles.length} tiles. Some failed.`);
@@ -1973,6 +1961,15 @@ const TerrainManager: React.FC<{
               >
                 {selectionBounds ? 'Area Selected' : 'Select Area on Map'}
               </button>
+            </div>
+
+            <div className="mb-4 bg-blue-600/10 border border-blue-500/20 p-3 rounded-xl">
+              <div className="flex gap-2">
+                <Info size={14} className="text-blue-400 shrink-0 mt-0.5" />
+                <p className="text-[9px] text-blue-200 leading-relaxed">
+                  Tiles are stored in your browser's internal database for offline use. They do not appear in your device's "Downloads" folder unless you use the <Download size={8} className="inline mx-0.5" /> export button below.
+                </p>
+              </div>
             </div>
 
             <div className="mb-4 bg-slate-900/50 p-3 rounded-xl border border-white/5">

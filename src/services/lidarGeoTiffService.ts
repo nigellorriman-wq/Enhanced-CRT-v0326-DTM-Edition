@@ -110,7 +110,7 @@ class LidarGeoTiffService {
   /**
    * Downloads a GeoTIFF from a URL and stores it in IndexedDB
    */
-  async downloadAndStore(url: string, name: string): Promise<void> {
+  async downloadAndStore(url: string, name: string): Promise<OfflineGeoTiff> {
     const proxyUrl = `/api/proxy-geotiff?url=${encodeURIComponent(url)}`;
     const response = await fetch(proxyUrl);
     if (!response.ok) {
@@ -156,40 +156,55 @@ class LidarGeoTiffService {
       throw new Error(`LiDAR server error: ${friendlyMessage}`);
     }
 
-    const tiff = await fromGeoTIFF.fromBlob(blob);
-    const image = await tiff.getImage();
-    const noData = image.getGDALNoData();
-    const [minX, minY, maxX, maxY] = image.getBoundingBox();
-    
-    // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
-    // This ensures we use the full envelope to eliminate gaps between tiles
-    const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
-    const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
-    const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
-    const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
-    
-    const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
-    const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
-    const minLng = Math.min(p1Lng, p2Lng, p3Lng, p4Lng);
-    const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
-    
-    const resolution = image.getResolution()[0];
+    try {
+      const tiff = await fromGeoTIFF.fromBlob(blob);
+      const image = await tiff.getImage();
+      const noData = image.getGDALNoData();
+      const [minX, minY, maxX, maxY] = image.getBoundingBox();
+      
+      // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
+      // This ensures we use the full envelope to eliminate gaps between tiles
+      const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+      const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+      const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+      const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+      
+      const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
+      const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
+      const minLng = Math.min(p1Lng, p2Lng, p3Lng, p4Lng);
+      const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
+      
+      const resolution = image.getResolution()[0];
 
-    const offlineData: OfflineGeoTiff = {
-      id: url,
-      name,
-      bounds: { minLat, maxLat, minLng, maxLng },
-      corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]],
-      resolution,
-      blob,
-      addedAt: Date.now()
-    };
+      const offlineData: OfflineGeoTiff = {
+        id: url,
+        name,
+        bounds: { minLat, maxLat, minLng, maxLng },
+        corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]],
+        resolution,
+        blob,
+        addedAt: Date.now()
+      };
 
-    await set(`geotiff_${url}`, offlineData);
-    
-    // Also load into memory immediately
-    const pool = new fromGeoTIFF.Pool();
-    this.loadedTiffs.set(url, { tiff, image, pool, noData });
+      try {
+        await set(`geotiff_${url}`, offlineData);
+      } catch (storageErr: any) {
+        console.error('[LiDAR] Storage error:', storageErr);
+        if (storageErr.name === 'QuotaExceededError' || storageErr.message?.includes('quota')) {
+          throw new Error('Storage quota exceeded. Please delete some existing tiles or free up space on your device.');
+        }
+        throw new Error(`Failed to save to device storage: ${storageErr.message || 'Unknown storage error'}`);
+      }
+      
+      // Also load into memory immediately
+      const pool = new fromGeoTIFF.Pool();
+      this.loadedTiffs.set(url, { tiff, image, pool, noData });
+      
+      return offlineData;
+    } catch (parseErr: any) {
+      console.error('[LiDAR] Parse error:', parseErr);
+      throw new Error(`Failed to parse GeoTIFF: ${parseErr.message}`);
+    }
   }
 
   /**
