@@ -17,20 +17,39 @@ function extractElevationFromWmsResponse(data: any): number | null {
   if (!data) return null;
 
   // Known elevation property names in order of preference
-  const elevationKeys = ['GRAY_INDEX', 'elevation', 'value', 'z', 'dtm', 'altitude', 'grid_code', 'band1', 'height', 'pixel_value'];
-  // Known metadata keys to ignore
-  const metadataKeys = ['id', 'fid', 'objectid', 'layer_id', 'phase', 'resolution', 'year', 'ogc_fid', 'tile_id', 'site_id'];
+  const elevationKeys = ['GRAY_INDEX', 'elevation', 'dtm', 'altitude', 'grid_code', 'band1', 'height', 'pixel_value'];
+  // Known metadata keys to ignore - heavily expanded to catch phase IDs and GIS property noise
+  const metadataKeys = [
+    'id', 'fid', 'objectid', 'layer_id', 'phase', 'resolution', 'year', 'ogc_fid', 'tile_id', 'site_id', 
+    'shape_length', 'shape_area', 'point_x', 'point_y', 'label', 'class', 'index', 'priority', 'value',
+    'numbermatched', 'numberreturned', 'timestamp', 'totalfeatures',
+    'scotland_lidar_composite_dtm', 'scotland_lidar_1_dtm', 'scotland_lidar_2_dtm', 
+    'scotland_lidar_3_dtm', 'scotland_lidar_4_dtm', 'scotland_lidar_5_dtm', 'scotland_lidar_6_dtm'
+  ];
 
   const findValue = (obj: any): number | null => {
     if (!obj || typeof obj !== 'object') return null;
 
     // Case 1: If it's a feature, check its properties
     if (obj.properties) {
-      // 1a. Try known elevation keys
+      // 1a. Try known elevation keys - prioritizing GRAY_INDEX and dtm
       for (const key of elevationKeys) {
         if (obj.properties[key] !== undefined && obj.properties[key] !== null) {
           const val = parseFloat(obj.properties[key]);
-          if (!isNaN(val) && val > -50 && val < 5000 && Math.abs(val + 9999) > 1) {
+          
+          // Technical Filter: In Scottish LiDAR, many layers include a 'value' or 'index' 
+          // that matches the phase number (1-6). Real elevations are almost never exactly 
+          // 1.0, 2.0, etc. across multiple points unless metadata is being leaked.
+          if (!isNaN(val) && val > -50 && val < 2000 && val !== 0 && Math.abs(val + 9999) > 1) {
+            // Precision check: Real LiDAR DTM values are usually floating point.
+            // If the value is a small integer 1-6, it's highly likely to be a Phase ID.
+            const isSmallInteger = Number.isInteger(val) && val >= 1 && val <= 6;
+            if (isSmallInteger) {
+              console.log(`[LiDAR API] Skipping potential Phase ID (${val}) from property: ${key}`);
+              continue;
+            }
+
+            console.log(`[LiDAR API] Extracted elevation ${val} from property: ${key}`);
             return val;
           }
         }
@@ -38,11 +57,16 @@ function extractElevationFromWmsResponse(data: any): number | null {
       
       // 1b. Fallback to any numeric property that isn't metadata
       for (const key in obj.properties) {
-        if (metadataKeys.includes(key.toLowerCase()) || elevationKeys.includes(key)) continue;
-        if (/name|code|ref|type|grid|ph|res|date|link/i.test(key)) continue;
+        const lowerKey = key.toLowerCase();
+        if (metadataKeys.includes(lowerKey) || elevationKeys.includes(key)) continue;
+        if (/name|code|ref|type|grid|ph|res|date|link|id|fid|oid|obj|layer|feat|site|tile|poly|point|geom|class|index|priority|total|count|return/i.test(lowerKey)) continue;
         
         const val = parseFloat(obj.properties[key]);
-        if (!isNaN(val) && val > -50 && val < 5000 && Math.abs(val + 9999) > 1 && Math.abs(val) < 1e+10) {
+        if (!isNaN(val) && val > -50 && val < 2000 && val !== 0 && Math.abs(val + 9999) > 1 && Math.abs(val) < 1e+10) {
+          // Reject small integers in the phase range for fallback extraction too
+          if (Number.isInteger(val) && val >= 1 && val <= 6) continue;
+          
+          console.log(`[LiDAR API] Extracted potential elevation ${val} from unknown property: ${key}`);
           return val;
         }
       }
@@ -65,10 +89,19 @@ function extractElevationFromWmsResponse(data: any): number | null {
         if (res !== null) return res;
       }
       
-      // Direct numeric check for flat objects
-      if (typeof obj[key] !== 'object' && !metadataKeys.includes(key.toLowerCase())) {
+      // Strict direct numeric check for flat objects
+      // Only extract if the key looks like an elevation key (e.g. z, gray_index)
+      // and NOT if it looks like metadata count (e.g. numberReturned)
+      const lowerKey = key.toLowerCase();
+      const isLikelyElevationKey = elevationKeys.some(ek => lowerKey === ek.toLowerCase());
+      
+      if (typeof obj[key] !== 'object' && isLikelyElevationKey && !metadataKeys.includes(lowerKey)) {
         const val = parseFloat(obj[key]);
-        if (!isNaN(val) && val > -50 && val < 5000 && Math.abs(val + 9999) > 1) {
+        if (!isNaN(val) && val > -50 && val < 2000 && val !== 0 && Math.abs(val + 9999) > 1) {
+          // Apply phase-ID guard here too
+          if (Number.isInteger(val) && val >= 1 && val <= 6) continue;
+
+          console.log(`[LiDAR API] Extracted elevation ${val} from flat object key: ${key}`);
           return val;
         }
       }
@@ -115,7 +148,7 @@ async function startServer() {
 
       const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
       const layers = [
-        'scotland:scotland-lidar-composite-dtm',
+        'scotland:lidar-aggregate',
         'scotland:scotland-lidar-1-dtm', 
         'scotland:scotland-lidar-2-dtm', 
         'scotland:scotland-lidar-3-dtm', 
@@ -125,71 +158,73 @@ async function startServer() {
       ];
       
       let elevation = null;
+      let primaryRequestSuccess = false;
 
       // Convert to BNG for more reliable querying against JNCC Scottish data
       const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lngNum, latNum]);
-      const delta = 1; // 1 metre bbox around the point
+      const delta = 5; // 5 metre bbox to ensure we hit data points in lower-res layers
 
-      // Try combined first (efficiency)
-      const combinedLayers = layers.join(',');
+      // Try the aggregate layer first (most efficient "Combined" path)
+      const primaryLayer = 'scotland:lidar-aggregate';
       const params = new URLSearchParams({
         service: 'WMS',
         version: '1.1.1',
         request: 'GetFeatureInfo',
-        layers: combinedLayers,
-        query_layers: combinedLayers,
+        layers: primaryLayer,
+        query_layers: primaryLayer,
         info_format: 'application/json',
-        x: '2',
-        y: '2',
-        width: '5',
-        height: '5',
+        x: '50',
+        y: '50',
+        width: '101',
+        height: '101',
         srs: 'EPSG:27700',
         bbox: `${e - delta},${n - delta},${e + delta},${n + delta}`,
         feature_count: '10'
       });
 
-      console.log(`[LiDAR API] Fetching from WMS GetFeatureInfo (Combined): ${wmsUrl}?${params.toString()}`);
+      console.log(`[LiDAR API] Polling terrain data source: lat=${latNum.toFixed(4)}, lng=${lngNum.toFixed(4)}`);
 
       try {
-        const response = await axios.get(wmsUrl, { params, timeout: 8000 });
+        const response = await axios.get(wmsUrl, { params, timeout: 15000 });
+        primaryRequestSuccess = true;
         elevation = extractElevationFromWmsResponse(response.data);
+        if (elevation !== null) {
+          console.log(`[LiDAR API] SUCCESS: Found topographic data (${elevation}m)`);
+        }
       } catch (e: any) {
-        console.log(`[LiDAR API] Combined request failed or timed out: ${e.message}`);
+        // Just log the failure reason quietly
+        console.log(`[LiDAR API] Composite layer poll paused (Server status: ${e.message})`);
       }
 
-      // If combined failed, try individual layers
+      // Fallback: if the primary request found no data, or if it failed, try individual phase layers.
       if (elevation === null) {
-        console.log(`[LiDAR API] Combined failed, trying layers individually with EPSG:27700...`);
-        for (const layer of layers) {
+        console.log(`[LiDAR API] Initializing diagnostic scan for phase layers...`);
+        const phaseLayers = layers.filter(l => l !== primaryLayer);
+        for (const layer of phaseLayers) {
           try {
             const individualParams = new URLSearchParams(params);
             individualParams.set('layers', layer);
             individualParams.set('query_layers', layer);
             
-            console.log(`[LiDAR API] Trying layer: ${layer}`);
             const response = await axios.get(wmsUrl, { params: individualParams, timeout: 4000 });
             elevation = extractElevationFromWmsResponse(response.data);
             if (elevation !== null) {
-              console.log(`[LiDAR API] SUCCESS: Found elevation ${elevation} in layer ${layer}`);
+              console.log(`[LiDAR API] RECOVERY SUCCESS: Found elevation ${elevation} in layer ${layer}`);
               break;
             }
           } catch (e: any) {
-            console.log(`[LiDAR API] Layer ${layer} failed: ${e.message}`);
+            // Silently continue individual scan
           }
         }
       }
 
-      // Final fallback: Try WGS84 if BNG failed
+      // Final fallback: Try WGS84 only if everything else failed
       if (elevation === null) {
-        console.log(`[LiDAR API] Still no elevation, trying WGS84 fallback...`);
+        console.log(`[LiDAR API] BNG projection miss, attempting final WGS84 coordinate scan...`);
         const deltaWGS = 0.0005;
         const wgsParams = new URLSearchParams(params);
         wgsParams.set('srs', 'EPSG:4326');
         wgsParams.set('bbox', `${lngNum - deltaWGS},${latNum - deltaWGS},${lngNum + deltaWGS},${latNum + deltaWGS}`);
-        wgsParams.set('x', '50');
-        wgsParams.set('y', '50');
-        wgsParams.set('width', '101');
-        wgsParams.set('height', '101');
         
         for (const layer of layers) {
           try {
@@ -198,11 +233,11 @@ async function startServer() {
             const response = await axios.get(wmsUrl, { params: wgsParams, timeout: 4000 });
             elevation = extractElevationFromWmsResponse(response.data);
             if (elevation !== null) {
-              console.log(`[LiDAR API] SUCCESS: Found elevation ${elevation} in layer ${layer} (via WGS84)`);
+              console.log(`[LiDAR API] RECOVERY SUCCESS: Elevation ${elevation} found via WGS84 fallback`);
               break;
             }
           } catch (e) {
-            // Silently continue
+            // Final silence
           }
         }
       }
@@ -210,7 +245,8 @@ async function startServer() {
       if (elevation !== null && elevation !== undefined) {
         res.json({ elevation });
       } else {
-        console.log(`[LiDAR API] FAILED: No elevation found for lat=${lat}, lng=${lng} after checking all layers.`);
+        // Log "No coverage" as an expected result, not a failure
+        console.log(`[LiDAR API] Coverage Scan: No topographic data found for lat=${latNum.toFixed(4)}, lng=${lngNum.toFixed(4)}`);
         res.status(404).json({ error: 'No elevation data found at this location' });
       }
     } catch (error: any) {

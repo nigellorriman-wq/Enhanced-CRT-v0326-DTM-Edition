@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Search, MapPin, ChevronRight, X, Navigation2, Zap, Wind, Loader2, Database, CheckCircle2, AlertCircle } from 'lucide-react';
+import { MapContainer, TileLayer, Marker } from 'react-leaflet';
+import L from 'leaflet';
 import { golfCourses } from '../constants/golfCourses';
 import { osgbToWgs84 } from '../utils/coords';
 import { fetchAverageWindData, WindData } from '../services/windService';
@@ -8,6 +10,7 @@ interface LidarSummary {
   coveragePercent: number;
   maxResolution: number | null;
   scanning: boolean;
+  readings: { elevation: number | null; lat: number; lng: number }[];
 }
 
 interface CoursePlanningProps {
@@ -22,6 +25,11 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
   const [loadingWeather, setLoadingWeather] = useState(false);
   const [lidarSummary, setLidarSummary] = useState<LidarSummary | null>(null);
 
+  const courseCoords = useMemo(() => {
+    if (!selectedCourse) return null;
+    return osgbToWgs84(selectedCourse.easting, selectedCourse.northing);
+  }, [selectedCourse]);
+
   useEffect(() => {
     if (selectedCourse) {
       const { lat, lng } = osgbToWgs84(selectedCourse.easting, selectedCourse.northing);
@@ -34,7 +42,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       };
 
       const scanLidar = async () => {
-        setLidarSummary({ coveragePercent: 0, maxResolution: null, scanning: true });
+        setLidarSummary({ coveragePercent: 0, maxResolution: null, scanning: true, readings: [] });
         
         // 3x3 grid, 500m intervals
         const points: { lat: number, lng: number }[] = [];
@@ -50,7 +58,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         }
 
         let hits = 0;
-        let bestRes = Infinity;
+        const currentReadings: { elevation: number | null; lat: number; lng: number }[] = [];
 
         // Track seen resolutions and coverage
         for (const pt of points) {
@@ -60,17 +68,24 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
               const data = await response.json();
               if (data && typeof data.elevation === 'number' && data.elevation !== null) {
                 hits++;
+                currentReadings.push({ elevation: data.elevation, lat: pt.lat, lng: pt.lng });
+              } else {
+                currentReadings.push({ elevation: null, lat: pt.lat, lng: pt.lng });
               }
+            } else {
+              currentReadings.push({ elevation: null, lat: pt.lat, lng: pt.lng });
             }
           } catch (e) {
             console.error('LiDAR scan point failed', e);
+            currentReadings.push({ elevation: null, lat: pt.lat, lng: pt.lng });
           }
         }
 
         setLidarSummary({
           coveragePercent: (hits / points.length) * 100,
           maxResolution: hits > 0 ? 0.5 : null, // Scottish LiDAR typically includes 0.5m in most active areas
-          scanning: false
+          scanning: false,
+          readings: currentReadings
         });
       };
 
@@ -337,6 +352,81 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                     <div className="flex flex-col items-end">
                       <span className="text-[7px] font-bold text-white uppercase opacity-40">Precision</span>
                       <span className="text-[9px] font-black text-white uppercase tracking-tighter italic">Phase 1-6</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-black/40 p-2 rounded-xl border border-white/5 overflow-hidden">
+                    <p className="text-[7px] font-black text-slate-500 uppercase tracking-widest mb-1.5 text-center">Grid Samples (500m)</p>
+                    <div className="h-32 w-full rounded-xl overflow-hidden border border-white/5 relative bg-slate-900">
+                      {courseCoords && (
+                        <MapContainer 
+                          center={[courseCoords.lat, courseCoords.lng]} 
+                          zoom={13} 
+                          className="h-full w-full"
+                          zoomControl={false}
+                          attributionControl={false}
+                          dragging={false}
+                          touchZoom={false}
+                          scrollWheelZoom={false}
+                          doubleClickZoom={false}
+                        >
+                          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                          {(() => {
+                            const validElevations = lidarSummary.readings
+                              .map(r => r.elevation)
+                              .filter((e): e is number => e !== null);
+                            
+                            if (validElevations.length === 0) return null;
+
+                            const n = validElevations.length;
+                            const mean = validElevations.reduce((a, b) => a + b, 0) / n;
+                            const stdDev = Math.sqrt(validElevations.map(x => Math.pow(x - mean, 2)).reduce((a, b) => a + b, 0) / n);
+                            const threshold = 2 * stdDev;
+
+                            return lidarSummary.readings.map((reading, i) => {
+                              if (reading.elevation === null) {
+                                return (
+                                  <Marker 
+                                    key={i} 
+                                    position={[reading.lat, reading.lng]}
+                                    icon={L.divIcon({
+                                      className: '',
+                                      html: `<div style="font-size: 13px; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 900; color: #94a3b8; white-space: nowrap; transform: translate(-50%, -50%); text-align: center; text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 6px rgba(0,0,0,1);">—</div>`,
+                                      iconSize: [0, 0],
+                                      iconAnchor: [0, 0]
+                                    })}
+                                  />
+                                );
+                              }
+
+                              const isOutlier = Math.abs(reading.elevation - mean) > threshold && stdDev > 0;
+                              if (isOutlier) return null;
+
+                              return (
+                                <Marker 
+                                  key={i} 
+                                  position={[reading.lat, reading.lng]}
+                                  icon={L.divIcon({
+                                    className: '',
+                                    html: `<div style="font-size: 13px; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 900; color: #60a5fa; white-space: nowrap; transform: translate(-50%, -50%); text-align: center; text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 6px rgba(0,0,0,1);">
+                                      ${Math.round(reading.elevation)}
+                                    </div>`,
+                                    iconSize: [0, 0],
+                                    iconAnchor: [0, 0]
+                                  })}
+                                />
+                              );
+                            });
+                          })()}
+                        </MapContainer>
+                      )}
+                      
+                      {/* Grid overlay for aesthetic alignment */}
+                      <div className="absolute inset-0 pointer-events-none grid grid-cols-3 grid-rows-3 border border-white/10 opacity-20">
+                        {[...Array(9)].map((_, i) => (
+                          <div key={i} className="border border-white/20" />
+                        ))}
+                      </div>
                     </div>
                   </div>
 
