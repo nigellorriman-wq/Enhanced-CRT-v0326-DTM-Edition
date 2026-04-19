@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Printer, RotateCcw, ChartSpline, Download, Loader2, FileText, Wind } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Printer, RotateCcw, ChartSpline, Download, Loader2, FileText, Wind, Navigation2, Mountain } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import {
@@ -49,6 +49,27 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   const [profiles, setProfiles] = useState<Record<string, { scratch: ProfilePoint[], bogey: ProfilePoint[] }>>({});
   const [avgWindData, setAvgWindData] = useState<WindData | null>(null);
   const [loadingWind, setLoadingWind] = useState(false);
+
+  const courseElevationSummary = useMemo(() => {
+    let minFeet = Infinity;
+    let maxFeet = -Infinity;
+    let minMetres = Infinity;
+    let maxMetres = -Infinity;
+    let hasData = false;
+
+    Object.values(profiles).forEach(profile => {
+      [...profile.scratch, ...profile.bogey].forEach(p => {
+        if (p.absoluteAltitude < minFeet) minFeet = p.absoluteAltitude;
+        if (p.absoluteAltitude > maxFeet) maxFeet = p.absoluteAltitude;
+        if (p.absoluteAltitudeMetres < minMetres) minMetres = p.absoluteAltitudeMetres;
+        if (p.absoluteAltitudeMetres > maxMetres) maxMetres = p.absoluteAltitudeMetres;
+        hasData = true;
+      });
+    });
+
+    return hasData ? { minFeet, maxFeet, minMetres, maxMetres } : null;
+  }, [profiles]);
+
   const profilesRef = useRef(profiles);
   const isLoadingLidarRef = useRef(isLoadingLidar);
   const reportRef = useRef<HTMLDivElement>(null);
@@ -78,6 +99,39 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
     const index = Math.round(deg / 22.5) % 16;
     return directions[index];
+  };
+
+  const calculateBearing = (startLat: number, startLng: number, endLat: number, endLng: number) => {
+    const toRad = (deg: number) => deg * (Math.PI / 180);
+    const toDeg = (rad: number) => rad * (180 / Math.PI);
+
+    const startLatRad = toRad(startLat);
+    const startLngRad = toRad(startLng);
+    const endLatRad = toRad(endLat);
+    const endLngRad = toRad(endLng);
+
+    const y = Math.sin(endLngRad - startLngRad) * Math.cos(endLatRad);
+    const x = Math.cos(startLatRad) * Math.sin(endLatRad) -
+            Math.sin(startLatRad) * Math.cos(endLatRad) * Math.cos(endLngRad - startLngRad);
+    let bearing = toDeg(Math.atan2(y, x));
+    return (bearing + 360) % 360;
+  };
+
+  const averageBearings = (bearings: { bearing: number, weight: number }[]) => {
+    let sinSum = 0;
+    let cosSum = 0;
+    let totalWeight = 0;
+
+    for (const item of bearings) {
+      const rad = item.bearing * (Math.PI / 180);
+      sinSum += Math.sin(rad) * item.weight;
+      cosSum += Math.cos(rad) * item.weight;
+      totalWeight += item.weight;
+    }
+
+    if (totalWeight === 0) return 0;
+    let avgBearing = Math.atan2(sinSum, cosSum) * (180 / Math.PI);
+    return (avgBearing + 360) % 360;
   };
 
   const [isTiffReady, setIsTiffReady] = useState(false);
@@ -338,6 +392,13 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     const lengthLabel = `${holeLength.toFixed(0)}${xUnit === 'Yards' ? 'y' : 'm'}`;
     const eplLabel = `${epl.toFixed(0)}${xUnit === 'Yards' ? 'y' : 'm'}`;
 
+    const yRightValues = data.map(p => p[yRightKey as keyof ProfilePoint] as number);
+    const minAbs = Math.min(...yRightValues);
+    const maxAbs = Math.max(...yRightValues);
+    const teeAbs = data[0][yRightKey as keyof ProfilePoint] as number;
+    const greenAbs = data[data.length - 1][yRightKey as keyof ProfilePoint] as number;
+    const unitSfx = isImperial ? 'ft' : 'm';
+
     return (
       <div className="flex flex-col w-full mb-6">
         <div className="flex justify-between items-center mb-2 px-4">
@@ -438,6 +499,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           </ResponsiveContainer>
         </div>
 
+        <div className="mt-2 px-4 flex justify-between text-[10px] font-bold text-slate-600 italic">
+          <span>Min/Max Elev: {minAbs.toFixed(1)}/{maxAbs.toFixed(1)}{unitSfx}</span>
+          <span>Tee: {teeAbs.toFixed(1)}{unitSfx}</span>
+          <span>Green: {greenAbs.toFixed(1)}{unitSfx}</span>
+        </div>
+
         {/* Pivot Points Table */}
         <div className="mt-4 px-4">
           <table className="w-full text-[10px] border-collapse">
@@ -478,6 +545,50 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   };
 
   const currentProfile = profiles[currentTrack?.id];
+
+  const averageHoleDirection = useMemo(() => {
+    if (!currentTrack || isSummaryPage) return null;
+
+    const getPathSegments = (forScratch: boolean) => {
+      const startPoint = currentTrack.raterPathPoints?.[0] || currentTrack.points[0];
+      const endPoint = currentTrack.raterPathPoints?.[currentTrack.raterPathPoints.length - 1] || currentTrack.points[currentTrack.points.length - 1];
+      const sortedPivots = [...(currentTrack.pivotPoints || [])].sort((a, b) => a.point.timestamp - b.point.timestamp);
+      
+      let anchors: GeoPoint[] = [startPoint];
+      for (const pivot of sortedPivots) {
+        if (forScratch) {
+          if (pivot.type === 'common' || pivot.type === 'scratch_cut') anchors.push(pivot.point);
+        } else { 
+          if (pivot.type === 'common' || pivot.type === 'bogoy_round') anchors.push(pivot.point);
+        }
+      }
+      anchors.push(endPoint);
+
+      const segments: { bearing: number, weight: number }[] = [];
+      for (let i = 0; i < anchors.length - 1; i++) {
+        const p1 = anchors[i];
+        const p2 = anchors[i+1];
+        const dist = calculateDistance(p1, p2);
+        if (dist > 0.1) {
+          const bearing = calculateBearing(p1.lat, p1.lng, p2.lat, p2.lng);
+          segments.push({ bearing, weight: dist });
+        }
+      }
+      return segments;
+    };
+
+    const scratchSegments = getPathSegments(true);
+    const bogeySegments = getPathSegments(false);
+    
+    const allSegments = [...scratchSegments, ...bogeySegments];
+    if (allSegments.length === 0) return null;
+
+    const avgDeg = averageBearings(allSegments);
+    return {
+      degrees: avgDeg,
+      cardinal: getCardinalDirection(avgDeg)
+    };
+  }, [currentTrack, isSummaryPage]);
 
   return (
     <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col overflow-hidden">
@@ -775,13 +886,85 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                   </div>
                 </div>
                 
-                <p className="mt-3 text-[7px] font-medium text-slate-400 leading-relaxed italic">
+                <div className="mt-6 border-t border-slate-100 pt-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center">
+                      <Mountain className="w-4 h-4 text-emerald-500" />
+                    </div>
+                    <h4 className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Course Elevation Summary</h4>
+                  </div>
+                  
+                  {courseElevationSummary ? (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 flex items-center justify-between shadow-inner">
+                        <div>
+                          <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mb-1 leading-none">Absolute Minimum</p>
+                          <p className="text-2xl font-black text-slate-900 leading-none">
+                            {courseElevationSummary.minFeet.toFixed(1)}<span className="text-[12px] ml-1 text-slate-400 font-bold uppercase">ft</span>
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-black text-slate-900 uppercase">
+                            {courseElevationSummary.minMetres.toFixed(1)}<span className="text-[10px] ml-1 text-slate-400 font-bold uppercase">m</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 flex items-center justify-between shadow-inner">
+                        <div>
+                          <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mb-1 leading-none">Absolute Maximum</p>
+                          <p className="text-2xl font-black text-slate-900 leading-none">
+                            {courseElevationSummary.maxFeet.toFixed(1)}<span className="text-[12px] ml-1 text-slate-400 font-bold uppercase">ft</span>
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-black text-slate-900 uppercase">
+                            {courseElevationSummary.maxMetres.toFixed(1)}<span className="text-[10px] ml-1 text-slate-400 font-bold uppercase">m</span>
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-16 flex items-center justify-center border-2 border-dashed border-slate-100 rounded-2xl">
+                      <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest animate-pulse">Processing Elevation Data...</p>
+                    </div>
+                  )}
+                </div>
+
+                <p className="mt-4 text-[7px] font-medium text-slate-400 leading-relaxed italic">
                   * Average daytime wind speed (08:00–20:00), direction, and max gust calculated at 10m height using historical data from the last 3 full years (2022-2024) for the months of April to October.
                 </p>
               </div>
             </div>
           ) : currentProfile ? (
             <div className="flex-1 flex flex-col">
+              {averageHoleDirection && (
+                <div className="mx-4 mb-4 bg-slate-900 rounded-2xl p-4 flex items-center justify-between border border-white/10 shadow-xl">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center border border-amber-500/20">
+                      <Navigation2 className="w-5 h-5 text-amber-500" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-white uppercase tracking-widest">Average Direction of Play</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-6">
+                    <div className="text-right">
+                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Degrees</p>
+                      <p className="text-lg font-black text-white leading-none">
+                        {averageHoleDirection.degrees.toFixed(0)}<span className="text-xs ml-0.5 text-slate-500">°</span>
+                      </p>
+                    </div>
+                    <div className="h-8 w-[1px] bg-white/10" />
+                    <div className="text-right">
+                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Compass</p>
+                      <p className="text-lg font-black text-amber-500 leading-none">
+                        {averageHoleDirection.cardinal}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
               {renderChart(currentProfile.scratch, `Scratch ${currentTrack?.genderRated ? `(${currentTrack.genderRated})` : ''}`, '#10b981')}
               {renderChart(currentProfile.bogey, `Bogey ${currentTrack?.genderRated ? `(${currentTrack.genderRated})` : ''}`, '#facc15')}
             </div>

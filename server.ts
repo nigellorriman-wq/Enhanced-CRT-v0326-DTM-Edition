@@ -3,6 +3,10 @@ import { createServer as createViteServer } from "vite";
 import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import proj4 from 'proj4';
+
+// Define British National Grid (BNG) projection
+proj4.defs("EPSG:27700", "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs");
 
 console.log('Starting Express server...');
 
@@ -10,27 +14,70 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function extractElevationFromWmsResponse(data: any): number | null {
-  if (!data || !data.features || !Array.isArray(data.features) || data.features.length === 0) {
-    return null;
-  }
-  
-  for (const feature of data.features) {
-    const props = feature.properties;
-    if (!props) continue;
-    
-    // Log properties for debugging if we're having trouble finding elevation
-    // console.log('[LiDAR API] Feature properties:', JSON.stringify(props));
-    
-    for (const key in props) {
-      const val = parseFloat(props[key]);
-      // Valid elevation range for Scotland (-50 to 5000m)
-      // Exclude common "no data" values like -9999
-      if (!isNaN(val) && val > -50 && val < 5000 && val !== -9999) {
-        return val;
+  if (!data) return null;
+
+  // Known elevation property names in order of preference
+  const elevationKeys = ['GRAY_INDEX', 'elevation', 'value', 'z', 'dtm', 'altitude', 'grid_code', 'band1', 'height', 'pixel_value'];
+  // Known metadata keys to ignore
+  const metadataKeys = ['id', 'fid', 'objectid', 'layer_id', 'phase', 'resolution', 'year', 'ogc_fid', 'tile_id', 'site_id'];
+
+  const findValue = (obj: any): number | null => {
+    if (!obj || typeof obj !== 'object') return null;
+
+    // Case 1: If it's a feature, check its properties
+    if (obj.properties) {
+      // 1a. Try known elevation keys
+      for (const key of elevationKeys) {
+        if (obj.properties[key] !== undefined && obj.properties[key] !== null) {
+          const val = parseFloat(obj.properties[key]);
+          if (!isNaN(val) && val > -50 && val < 5000 && Math.abs(val + 9999) > 1) {
+            return val;
+          }
+        }
+      }
+      
+      // 1b. Fallback to any numeric property that isn't metadata
+      for (const key in obj.properties) {
+        if (metadataKeys.includes(key.toLowerCase()) || elevationKeys.includes(key)) continue;
+        if (/name|code|ref|type|grid|ph|res|date|link/i.test(key)) continue;
+        
+        const val = parseFloat(obj.properties[key]);
+        if (!isNaN(val) && val > -50 && val < 5000 && Math.abs(val + 9999) > 1 && Math.abs(val) < 1e+10) {
+          return val;
+        }
       }
     }
-  }
-  return null;
+
+    // Case 2: Deep search in other objects (recurse)
+    // First check features array if present
+    if (Array.isArray(obj.features)) {
+      for (const feature of obj.features) {
+        const res = findValue(feature);
+        if (res !== null) return res;
+      }
+    }
+
+    // Then check all other keys
+    for (const key in obj) {
+      if (key === 'features' || key === 'properties') continue;
+      if (obj[key] && typeof obj[key] === 'object') {
+        const res = findValue(obj[key]);
+        if (res !== null) return res;
+      }
+      
+      // Direct numeric check for flat objects
+      if (typeof obj[key] !== 'object' && !metadataKeys.includes(key.toLowerCase())) {
+        const val = parseFloat(obj[key]);
+        if (!isNaN(val) && val > -50 && val < 5000 && Math.abs(val + 9999) > 1) {
+          return val;
+        }
+      }
+    }
+
+    return null;
+  };
+
+  return findValue(data);
 }
 
 async function startServer() {
@@ -68,6 +115,7 @@ async function startServer() {
 
       const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
       const layers = [
+        'scotland:scotland-lidar-composite-dtm',
         'scotland:scotland-lidar-1-dtm', 
         'scotland:scotland-lidar-2-dtm', 
         'scotland:scotland-lidar-3-dtm', 
@@ -77,7 +125,10 @@ async function startServer() {
       ];
       
       let elevation = null;
-      const delta = 0.0005; 
+
+      // Convert to BNG for more reliable querying against JNCC Scottish data
+      const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lngNum, latNum]);
+      const delta = 1; // 1 metre bbox around the point
 
       // Try combined first (efficiency)
       const combinedLayers = layers.join(',');
@@ -88,27 +139,27 @@ async function startServer() {
         layers: combinedLayers,
         query_layers: combinedLayers,
         info_format: 'application/json',
-        x: '50',
-        y: '50',
-        width: '101',
-        height: '101',
-        srs: 'EPSG:4326',
-        bbox: `${lngNum - delta},${latNum - delta},${lngNum + delta},${latNum + delta}`,
-        feature_count: '50'
+        x: '2',
+        y: '2',
+        width: '5',
+        height: '5',
+        srs: 'EPSG:27700',
+        bbox: `${e - delta},${n - delta},${e + delta},${n + delta}`,
+        feature_count: '10'
       });
 
       console.log(`[LiDAR API] Fetching from WMS GetFeatureInfo (Combined): ${wmsUrl}?${params.toString()}`);
 
       try {
-        const response = await axios.get(wmsUrl, { params, timeout: 5000 });
+        const response = await axios.get(wmsUrl, { params, timeout: 8000 });
         elevation = extractElevationFromWmsResponse(response.data);
       } catch (e: any) {
         console.log(`[LiDAR API] Combined request failed or timed out: ${e.message}`);
       }
 
-      // If combined failed, try individual layers (some GeoServers are picky)
+      // If combined failed, try individual layers
       if (elevation === null) {
-        console.log(`[LiDAR API] Combined failed, trying layers individually...`);
+        console.log(`[LiDAR API] Combined failed, trying layers individually with EPSG:27700...`);
         for (const layer of layers) {
           try {
             const individualParams = new URLSearchParams(params);
@@ -116,7 +167,7 @@ async function startServer() {
             individualParams.set('query_layers', layer);
             
             console.log(`[LiDAR API] Trying layer: ${layer}`);
-            const response = await axios.get(wmsUrl, { params: individualParams, timeout: 3000 });
+            const response = await axios.get(wmsUrl, { params: individualParams, timeout: 4000 });
             elevation = extractElevationFromWmsResponse(response.data);
             if (elevation !== null) {
               console.log(`[LiDAR API] SUCCESS: Found elevation ${elevation} in layer ${layer}`);
@@ -124,6 +175,34 @@ async function startServer() {
             }
           } catch (e: any) {
             console.log(`[LiDAR API] Layer ${layer} failed: ${e.message}`);
+          }
+        }
+      }
+
+      // Final fallback: Try WGS84 if BNG failed
+      if (elevation === null) {
+        console.log(`[LiDAR API] Still no elevation, trying WGS84 fallback...`);
+        const deltaWGS = 0.0005;
+        const wgsParams = new URLSearchParams(params);
+        wgsParams.set('srs', 'EPSG:4326');
+        wgsParams.set('bbox', `${lngNum - deltaWGS},${latNum - deltaWGS},${lngNum + deltaWGS},${latNum + deltaWGS}`);
+        wgsParams.set('x', '50');
+        wgsParams.set('y', '50');
+        wgsParams.set('width', '101');
+        wgsParams.set('height', '101');
+        
+        for (const layer of layers) {
+          try {
+            wgsParams.set('layers', layer);
+            wgsParams.set('query_layers', layer);
+            const response = await axios.get(wmsUrl, { params: wgsParams, timeout: 4000 });
+            elevation = extractElevationFromWmsResponse(response.data);
+            if (elevation !== null) {
+              console.log(`[LiDAR API] SUCCESS: Found elevation ${elevation} in layer ${layer} (via WGS84)`);
+              break;
+            }
+          } catch (e) {
+            // Silently continue
           }
         }
       }

@@ -3246,10 +3246,12 @@ const App: React.FC = () => {
               <BookOpen size={20} className="text-blue-400" />
               <span className="text-[13px] font-bold uppercase tracking-widest text-white">User Manual</span>
             </button>
+{/* 
             <button onClick={() => setView('wcs')} className="mt-2 bg-slate-800/50 border border-white/10 rounded-[1.8rem] py-6 flex items-center justify-center gap-4 active:bg-slate-700 transition-colors">
               <Layers size={20} className="text-emerald-400" />
               <span className="text-[13px] font-bold uppercase tracking-widest text-white">WCS Capabilities Analysis</span>
             </button>
+            */}
             <div className="flex gap-4 mt-2">
                <button onClick={exportKML} className="flex-1 bg-slate-800/50 border border-blue-500/20 rounded-[1.8rem] py-6 flex items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-lg"><Download size={18} className="text-blue-500" /><span className="text-[10px] font-bold uppercase tracking-widest text-white">Export</span></button>
                <label className="flex-1 bg-slate-800/50 border border-emerald-500/20 rounded-[1.8rem] py-6 flex items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-lg cursor-pointer"><Upload size={18} className="text-emerald-500" /><span className="text-[10px] font-bold uppercase tracking-widest text-white">Import</span><input type="file" accept=".kml" onChange={importKML} className="hidden" /></label>
@@ -3302,13 +3304,24 @@ const App: React.FC = () => {
       ) : view === 'wcs' ? (
         <WCSAnalyzer 
           onBack={() => setView('landing')} 
-          onSelectCoverage={(id) => {
+          onSelectCoverage={(id, bounds) => {
             setActiveLidarLayers(id);
-            // If it's a single layer, we might need a different style or just use the same viridis style
-            // For simplicity, let's assume the viridis style works for all or just use default
-            setActiveLidarStyles('scotland:lidar-dem-viridis'); 
+            // If it's a specific product, default styles might be better than scotland:lidar-dem-viridis
+            // which is for the composite DEM. 
+            if (id.includes(':')) {
+              setActiveLidarStyles(''); 
+            } else {
+              setActiveLidarStyles('scotland:lidar-dem-viridis');
+            }
             setMapStyle('LiDAR DTM');
             setView('landing');
+
+            // Zoom to coverage if bounds are available
+            if (bounds && mapInstance) {
+              // bounds is [minLng, minLat, maxLng, maxLat]
+              // Leaflet fitBounds expects [[minLat, minLng], [maxLat, maxLng]]
+              mapInstance.fitBounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]], { padding: [50, 50], maxZoom: 18 });
+            }
           }}
         />
       ) : view === 'planning' ? (

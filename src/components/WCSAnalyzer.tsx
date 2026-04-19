@@ -10,12 +10,13 @@ interface WCSCapabilities {
   coverages: {
     id: string;
     subtypes: string[];
+    bounds?: [number, number, number, number]; // [minLng, minLat, maxLng, maxLat]
   }[];
 }
 
 interface WCSAnalyzerProps {
   onBack: () => void;
-  onSelectCoverage?: (coverageId: string) => void;
+  onSelectCoverage?: (coverageId: string, bounds?: [number, number, number, number]) => void;
 }
 
 export const WCSAnalyzer: React.FC<WCSAnalyzerProps> = ({ onBack, onSelectCoverage }) => {
@@ -61,7 +62,24 @@ export const WCSAnalyzer: React.FC<WCSAnalyzerProps> = ({ onBack, onSelectCovera
           const subtypes = Array.from(summary.getElementsByTagName('wcs:CoverageSubtype'))
             .map(st => st.textContent || '')
             .filter(Boolean);
-          return { id, subtypes };
+          
+          // Extract bounds if available
+          let bounds: [number, number, number, number] | undefined;
+          const bbox = summary.getElementsByTagName('ows:WGS84BoundingBox')[0];
+          if (bbox) {
+            const lowerCorner = bbox.getElementsByTagName('ows:LowerCorner')[0]?.textContent?.split(' ');
+            const upperCorner = bbox.getElementsByTagName('ows:UpperCorner')[0]?.textContent?.split(' ');
+            if (lowerCorner && upperCorner && lowerCorner.length >= 2 && upperCorner.length >= 2) {
+              bounds = [
+                parseFloat(lowerCorner[0]), 
+                parseFloat(lowerCorner[1]), 
+                parseFloat(upperCorner[0]), 
+                parseFloat(upperCorner[1])
+              ];
+            }
+          }
+
+          return { id, subtypes, bounds };
         });
 
         setCapabilities({
@@ -203,7 +221,7 @@ export const WCSAnalyzer: React.FC<WCSAnalyzerProps> = ({ onBack, onSelectCovera
                   <button 
                     onClick={() => {
                       setActiveCoverageId(cov.id);
-                      onSelectCoverage(cov.id);
+                      onSelectCoverage(cov.id, cov.bounds);
                     }}
                     className={`shrink-0 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all ${activeCoverageId === cov.id ? 'bg-emerald-600 text-white' : 'bg-blue-600/20 text-blue-400 hover:bg-blue-600/40'}`}
                   >
