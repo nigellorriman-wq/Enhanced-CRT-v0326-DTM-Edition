@@ -1,7 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Search, MapPin, ChevronRight, X, Navigation2, Zap, Wind, Loader2, Database, CheckCircle2, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Search, MapPin, ChevronRight, X, Navigation2, Zap, Wind, Loader2, Database, CheckCircle2, AlertCircle, FileDown, Globe, Phone, Home } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
+import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
+import { GoogleGenAI, Type } from '@google/genai';
 import { golfCourses } from '../constants/golfCourses';
 import { osgbToWgs84 } from '../utils/coords';
 import { fetchAverageWindData, WindData } from '../services/windService';
@@ -11,6 +14,12 @@ interface LidarSummary {
   maxResolution: number | null;
   scanning: boolean;
   readings: { elevation: number | null; lat: number; lng: number }[];
+}
+
+interface CourseContactInfo {
+  website: string;
+  phone: string;
+  full_address: string;
 }
 
 interface CoursePlanningProps {
@@ -24,6 +33,10 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
   const [weatherData, setWeatherData] = useState<WindData | null>(null);
   const [loadingWeather, setLoadingWeather] = useState(false);
   const [lidarSummary, setLidarSummary] = useState<LidarSummary | null>(null);
+  const [courseContactInfo, setCourseContactInfo] = useState<CourseContactInfo | null>(null);
+  const [loadingContact, setLoadingContact] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const pdfRef = useRef<HTMLDivElement>(null);
 
   const courseCoords = useMemo(() => {
     if (!selectedCourse) return null;
@@ -44,9 +57,8 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       const scanLidar = async () => {
         setLidarSummary({ coveragePercent: 0, maxResolution: null, scanning: true, readings: [] });
         
-        // 3x3 grid, 500m intervals
         const points: { lat: number, lng: number }[] = [];
-        const intervalDegrees = 500 / 111320; // Approx 500m in degrees
+        const intervalDegrees = 500 / 111320; 
         
         for (let x = -1; x <= 1; x++) {
           for (let y = -1; y <= 1; y++) {
@@ -60,7 +72,6 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         let hits = 0;
         const currentReadings: { elevation: number | null; lat: number; lng: number }[] = [];
 
-        // Track seen resolutions and coverage
         for (const pt of points) {
           try {
             const response = await fetch(`/api/lidar?lat=${pt.lat}&lng=${pt.lng}`);
@@ -83,17 +94,59 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
 
         setLidarSummary({
           coveragePercent: (hits / points.length) * 100,
-          maxResolution: hits > 0 ? 0.5 : null, // Scottish LiDAR typically includes 0.5m in most active areas
+          maxResolution: hits > 0 ? 0.5 : null,
           scanning: false,
           readings: currentReadings
         });
       };
 
-      fetchWeather();
-      scanLidar();
+      const fetchContactInfo = async () => {
+        if (!selectedCourse) return;
+        setLoadingContact(true);
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: `Find the official contact information for the golf course: ${selectedCourse.site_name} in ${selectedCourse.town}, Scotland. Return ONLY a JSON object with keys: website (full URL), phone (formatted with UK code), and full_address. Ensure it is the correct club and not a generic business nearby.`,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  website: { type: Type.STRING },
+                  phone: { type: Type.STRING },
+                  full_address: { type: Type.STRING }
+                },
+                required: ["website", "phone", "full_address"]
+              },
+              tools: [{ googleSearch: {} }],
+              toolConfig: { includeServerSideToolInvocations: true }
+            }
+          });
+
+          if (response.text) {
+            const data = JSON.parse(response.text.trim());
+            setCourseContactInfo(data);
+          }
+        } catch (error) {
+          console.error('Failed to fetch course contact info:', error);
+          setCourseContactInfo(null);
+        } finally {
+          setLoadingContact(false);
+        }
+      };
+
+      const initAnalysis = async () => {
+        await fetchWeather();
+        await scanLidar();
+        await fetchContactInfo();
+      };
+
+      initAnalysis();
     } else {
       setWeatherData(null);
       setLidarSummary(null);
+      setCourseContactInfo(null);
     }
   }, [selectedCourse]);
 
@@ -112,6 +165,149 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
     if (selectedCourse) {
       const { lat, lng } = osgbToWgs84(selectedCourse.easting, selectedCourse.northing);
       onSelect(lat, lng, selectedCourse.site_name);
+    }
+  };
+
+  const handleExportPDF = async () => {
+    if (!selectedCourse || !lidarSummary || !weatherData) return;
+    
+    setIsExporting(true);
+    try {
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const white = '#FFFFFF';
+      const blue = '#60a5fa';
+      const darkBlue = '#020617';
+      const slate = 'rgba(255,255,255,0.5)';
+      const bgCard = 'rgba(255,255,255,0.03)';
+      
+      // Page Background
+      pdf.setFillColor(2, 6, 23); // #020617
+      pdf.rect(0, 0, 210, 297, 'F');
+
+      // Header
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(28);
+      pdf.text(selectedCourse.site_name.toUpperCase(), 20, 30);
+      
+      pdf.setTextColor(96, 165, 250);
+      pdf.setFontSize(14);
+      pdf.text(`${selectedCourse.town}, SCOTLAND`, 20, 38);
+
+      pdf.setTextColor(150, 150, 150);
+      pdf.setFontSize(9);
+      pdf.text('REPORT GENERATED', 190, 28, { align: 'right' });
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(11);
+      pdf.text(new Date().toLocaleDateString('en-GB'), 190, 34, { align: 'right' });
+
+      // Environment Card (Vector)
+      pdf.setDrawColor(255, 255, 255);
+      pdf.setFillColor(30, 41, 59); // Slate-800 equivalent to match app cards
+      pdf.roundedRect(20, 50, 80, 50, 5, 5, 'FD');
+      
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(12);
+      pdf.text('ENVIRONMENT', 25, 60);
+      
+      pdf.setFontSize(9);
+      pdf.setTextColor(150, 150, 150);
+      pdf.text('Prevailing Direction', 25, 70);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(`${getCardinalDirection(weatherData.avgDirectionDeg)} (${weatherData.avgDirectionDeg.toFixed(0)}°)`, 95, 70, { align: 'right' });
+      
+      pdf.setTextColor(150, 150, 150);
+      pdf.text('Avg Wind Speed', 25, 80);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(`${weatherData.avgSpeedMph.toFixed(1)} mph`, 95, 80, { align: 'right' });
+      
+      pdf.setTextColor(150, 150, 150);
+      pdf.text('Max Gust', 25, 90);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(`${weatherData.avgGustMph.toFixed(1)} mph`, 95, 90, { align: 'right' });
+
+      // Terrain Card (Vector)
+      pdf.setFillColor(30, 41, 59); // Slate-800 equivalent
+      pdf.roundedRect(110, 50, 80, 50, 5, 5, 'FD');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(12);
+      pdf.text('TERRAIN DATA', 115, 60);
+      
+      pdf.setFontSize(9);
+      pdf.setTextColor(150, 150, 150);
+      pdf.text('LiDAR Coverage', 115, 70);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(`${lidarSummary.coveragePercent.toFixed(0)}%`, 185, 70, { align: 'right' });
+      
+      pdf.setTextColor(150, 150, 150);
+      pdf.text('Max Resolution', 115, 80);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(lidarSummary.maxResolution ? `${lidarSummary.maxResolution.toFixed(1)}m` : 'N/A', 185, 80, { align: 'right' });
+      
+      pdf.setTextColor(150, 150, 150);
+      pdf.text('Data Format', 115, 90);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text('DTM Phase 1-6', 185, 90, { align: 'right' });
+
+      // Directory Card (Vector)
+      if (courseContactInfo) {
+        pdf.setFillColor(30, 41, 59); // Slate-800 equivalent
+        pdf.roundedRect(20, 110, 170, 45, 5, 5, 'FD');
+        pdf.setFontSize(12);
+        pdf.text('GOLF CLUB DIRECTORY', 25, 120);
+        
+        pdf.setFontSize(9);
+        pdf.setTextColor(150, 150, 150);
+        pdf.text('Official Website', 25, 130);
+        pdf.setTextColor(96, 165, 250);
+        pdf.text(courseContactInfo.website, 70, 130);
+        
+        pdf.setTextColor(150, 150, 150);
+        pdf.text('Telephone', 25, 138);
+        pdf.setTextColor(255, 255, 255);
+        pdf.text(courseContactInfo.phone, 70, 138);
+        
+        pdf.setTextColor(150, 150, 150);
+        pdf.text('Registered Address', 25, 146);
+        pdf.setTextColor(255, 255, 255);
+        const splitAddress = pdf.splitTextToSize(courseContactInfo.full_address, 110);
+        pdf.text(splitAddress, 70, 146);
+      }
+
+      // Map Capture (The only bitmap part)
+      if (pdfRef.current) {
+        const mapElement = pdfRef.current.querySelector('.leaflet-container');
+        if (mapElement) {
+          await new Promise(resolve => setTimeout(resolve, 2500));
+          const mapCanvas = await html2canvas(mapElement as HTMLElement, {
+            useCORS: true,
+            backgroundColor: '#0f172a',
+            scale: 2,
+            allowTaint: false, // Set to false to prevent tainted canvases with cross-origin tiles
+          });
+          const mapImgData = mapCanvas.toDataURL('image/jpeg', 0.8);
+          // Position map lower down
+          pdf.roundedRect(20, 165, 170, 100, 5, 5, 'D'); // Border for map
+          pdf.addImage(mapImgData, 'JPEG', 20, 165, 170, 100);
+          
+          pdf.setFillColor(0, 0, 0, 0.6);
+          pdf.rect(25, 170, 50, 8, 'F');
+          pdf.setTextColor(255, 255, 255);
+          pdf.setFontSize(7);
+          pdf.text('SITE TOPOGRAPHY EXTRACT', 30, 175);
+        }
+      }
+
+      // Footer
+      pdf.setFontSize(8);
+      pdf.setTextColor(100, 100, 100);
+      pdf.text('SCOTTISH GOLF RATING TOOLKIT • PROPRIETARY TERRAIN ANALYSIS MODEL', 105, 285, { align: 'center' });
+
+      pdf.save(`${selectedCourse.site_name.replace(/\s+/g, '_')}_Analysis.pdf`);
+    } catch (error) {
+      console.error('PDF Export failed:', error);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -204,7 +400,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
 
         {selectedCourse && (
           <div className="bg-blue-500/5 border border-blue-500/20 p-6 rounded-[2rem] flex flex-col md:flex-row items-center md:items-start gap-8 animate-in zoom-in-95 duration-300">
-            <div className="flex flex-col items-center md:items-start text-center md:text-left">
+            <div className="flex flex-col items-center md:items-start text-center md:text-left relative w-full md:w-auto">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-4 shadow-xl shadow-blue-600/40">
                 <MapPin size={32} />
               </div>
@@ -213,6 +409,17 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
               <p className="text-yellow-600 text-[12px] leading-relaxed max-w-[180px] mb-6">
                 Ready to analyze this course? Hit the GO button above to load LiDAR terrain data.
               </p>
+              
+              <button 
+                onClick={handleExportPDF}
+                disabled={isExporting || loadingWeather || lidarSummary?.scanning || loadingContact || !weatherData || !lidarSummary || !courseContactInfo}
+                className="w-full md:w-auto bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-white/10 text-white font-bold py-3 px-6 rounded-2xl shadow-xl hover:bg-slate-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 group"
+              >
+                {isExporting ? <Loader2 size={18} className="animate-spin text-blue-500" /> : <FileDown size={18} className={`${(loadingWeather || lidarSummary?.scanning || loadingContact) ? 'text-slate-500' : 'text-blue-400'} group-hover:scale-110 transition-transform`} />}
+                <span className="text-xs">
+                  {isExporting ? 'EXPORTING...' : (loadingWeather || lidarSummary?.scanning || loadingContact) ? 'ANALYZING COURSE...' : 'EXPORT SUMMARY PDF'}
+                </span>
+              </button>
             </div>
 
             {/* Weather climatology summary */}
@@ -336,7 +543,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                     {lidarSummary.coveragePercent === 100 ? (
                       <CheckCircle2 className="text-emerald-500" size={20} />
                     ) : lidarSummary.coveragePercent > 0 ? (
-                      <div className="w-5 h-5 rounded-full border-2 border-emerald-500/30 border-t-emerald-500 animate-spin" />
+                      <CheckCircle2 className="text-emerald-500/70" size={20} />
                     ) : (
                       <AlertCircle className="text-slate-600" size={20} />
                     )}
@@ -443,9 +650,235 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                 </div>
               )}
             </div>
+
+            {/* Contact Information Table */}
+            {selectedCourse && (
+              <div className="w-full max-w-[280px] bg-slate-900/90 border border-white/10 rounded-[2rem] p-5 text-left shadow-2xl relative overflow-hidden backdrop-blur-md shrink-0">
+                <div className="absolute top-0 right-0 w-24 h-24 bg-blue-600/5 blur-3xl -z-10" />
+                
+                <div className="flex items-center justify-between mb-5">
+                  <div className="flex items-center gap-3">
+                    <div className="w-7 h-7 bg-blue-500/10 rounded-full flex items-center justify-center">
+                      <Home size={14} className="text-blue-400" />
+                    </div>
+                    <div>
+                      <h4 className="text-[8px] font-black text-slate-400 uppercase tracking-[0.2em] leading-none mb-1">Directory</h4>
+                      <span className="text-xs font-bold text-white uppercase tracking-widest">Club Details</span>
+                    </div>
+                  </div>
+                </div>
+
+                {loadingContact ? (
+                  <div className="flex flex-col items-center justify-center py-8 gap-3">
+                    <Loader2 size={24} className="text-blue-500 animate-spin" />
+                    <p className="text-[8px] font-bold text-slate-500 uppercase tracking-widest animate-pulse">Confirming Info...</p>
+                  </div>
+                ) : courseContactInfo ? (
+                  <div className="flex flex-col gap-4">
+                    <div className="bg-black/20 p-3 rounded-xl border border-white/5">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Globe size={10} className="text-blue-400" />
+                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Website</span>
+                      </div>
+                      <a 
+                        href={courseContactInfo.website} 
+                        target="_blank" 
+                        rel="noreferrer" 
+                        className="text-[10px] font-bold text-blue-400 hover:underline break-all"
+                      >
+                        {courseContactInfo.website}
+                      </a>
+                    </div>
+
+                    <div className="bg-black/20 p-3 rounded-xl border border-white/5">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Phone size={10} className="text-blue-400" />
+                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Telephone</span>
+                      </div>
+                      <p className="text-[10px] font-bold text-white tracking-widest">{courseContactInfo.phone}</p>
+                    </div>
+
+                    <div className="bg-black/20 p-3 rounded-xl border border-white/5">
+                      <div className="flex items-center gap-2 mb-1">
+                        <MapPin size={10} className="text-blue-400" />
+                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Address</span>
+                      </div>
+                      <p className="text-[10px] font-bold text-white leading-relaxed">{courseContactInfo.full_address}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-6 text-center gap-2">
+                    <AlertCircle size={20} className="text-slate-800" />
+                    <p className="text-[8px] font-bold text-slate-500 uppercase tracking-widest">Details Not Found</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* Hidden PDF Export Template (A4 format) */}
+      {selectedCourse && weatherData && lidarSummary && (
+        <div style={{ position: 'absolute', top: '-10000px', left: '-10000px', pointerEvents: 'none' }}>
+          <div 
+            ref={pdfRef} 
+            style={{ 
+              width: '794px', 
+              minHeight: '1123px', 
+              padding: '60px', 
+              background: '#020617', 
+              color: 'white',
+              fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '40px'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '30px' }}>
+              <div>
+                <h1 style={{ fontSize: '36px', fontWeight: 'bold', letterSpacing: '-0.02em', margin: '0 0 8px 0' }}>{selectedCourse.site_name}</h1>
+                <p style={{ color: '#60a5fa', fontSize: '18px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.1em', margin: 0 }}>{selectedCourse.town}, Scotland</p>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.1em', margin: '0 0 4px 0' }}>Report Generated</p>
+                <p style={{ fontSize: '14px', fontWeight: 'bold' }}>{new Date().toLocaleDateString('en-GB')}</p>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
+              {/* Environment Section */}
+              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '32px', padding: '30px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
+                  <div style={{ width: '32px', height: '32px', background: 'rgba(96,165,250,0.1)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Wind size={18} style={{ color: '#60a5fa' }} />
+                  </div>
+                  <h3 style={{ fontSize: '18px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Environment</h3>
+                </div>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>Prevailing Direction</span>
+                    <span style={{ fontWeight: 'bold' }}>{getCardinalDirection(weatherData.avgDirectionDeg)} ({weatherData.avgDirectionDeg.toFixed(0)}°)</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>Average Wind Speed</span>
+                    <span style={{ fontWeight: 'bold' }}>{weatherData.avgSpeedMph.toFixed(1)} mph</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>Maximum Gust</span>
+                    <span style={{ fontWeight: 'bold' }}>{weatherData.avgGustMph.toFixed(1)} mph</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Terrain Section */}
+              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '32px', padding: '30px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
+                  <div style={{ width: '32px', height: '32px', background: 'rgba(52,211,153,0.1)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Database size={18} style={{ color: '#34d399' }} />
+                  </div>
+                  <h3 style={{ fontSize: '18px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Terrain Data</h3>
+                </div>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>LiDAR Coverage</span>
+                    <span style={{ fontWeight: 'bold', color: '#10b981' }}>{lidarSummary.coveragePercent.toFixed(0)}%</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>Scanning Resolution</span>
+                    <span style={{ fontWeight: 'bold' }}>{lidarSummary.maxResolution ? `${lidarSummary.maxResolution.toFixed(1)}m` : 'N/A'}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>Data Format</span>
+                    <span style={{ fontWeight: 'bold' }}>DTM Phase 1-6</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* PDF Directory Section */}
+            {courseContactInfo && (
+              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '32px', padding: '30px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
+                  <div style={{ width: '32px', height: '32px', background: 'rgba(255,255,255,0.05)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Home size={18} style={{ color: 'white' }} />
+                  </div>
+                  <h3 style={{ fontSize: '18px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Golf Club Directory</h3>
+                </div>
+                
+                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '20px 40px' }}>
+                  <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>Official Website</span>
+                  <span style={{ fontWeight: 'bold', color: '#60a5fa' }}>{courseContactInfo.website}</span>
+                  
+                  <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>Telephone</span>
+                  <span style={{ fontWeight: 'bold' }}>{courseContactInfo.phone}</span>
+                  
+                  <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px' }}>Registered Address</span>
+                  <span style={{ fontWeight: 'bold', lineHeight: '1.4' }}>{courseContactInfo.full_address}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Large OSM Map */}
+            <div style={{ height: '450px', background: '#0f172a', borderRadius: '32px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)', position: 'relative' }}>
+              <div style={{ position: 'absolute', top: '20px', left: '20px', zIndex: 1000, background: 'rgba(0,0,0,0.6)', padding: '8px 16px', borderRadius: '12px', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                <span style={{ fontSize: '10px', color: 'white', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Site Topography Extract</span>
+              </div>
+              {courseCoords && (
+                <MapContainer 
+                  center={[courseCoords.lat, courseCoords.lng]} 
+                  zoom={14} 
+                  style={{ width: '100%', height: '100%' }}
+                  zoomControl={false}
+                  attributionControl={false}
+                  fadeAnimation={false} // Disable animation for snapshotting
+                >
+                  <TileLayer 
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" 
+                    crossOrigin="anonymous"
+                  />
+                  {(() => {
+                    const validElevations = lidarSummary.readings
+                      .map(r => r.elevation)
+                      .filter((e): e is number => e !== null);
+                    
+                    if (validElevations.length === 0) return null;
+
+                    const n = validElevations.length;
+                    const mean = validElevations.reduce((a, b) => a + b, 0) / n;
+                    const stdDev = Math.sqrt(validElevations.map(x => Math.pow(x - mean, 2)).reduce((a, b) => a + b, 0) / n);
+                    const threshold = 2 * stdDev;
+
+                    return lidarSummary.readings.map((reading, i) => {
+                      const isOutlier = reading.elevation !== null && Math.abs(reading.elevation - mean) > threshold && stdDev > 0;
+                      if (isOutlier || reading.elevation === null) return null;
+
+                      return (
+                        <Marker 
+                          key={i} 
+                          position={[reading.lat, reading.lng]}
+                          icon={L.divIcon({
+                            className: '',
+                            html: `<div style="font-size: 14px; font-weight: 900; color: #60a5fa; white-space: nowrap; transform: translate(-50%, -50%); text-align: center; text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 8px rgba(0,0,0,1);">${Math.round(reading.elevation)}</div>`,
+                            iconSize: [0, 0],
+                            iconAnchor: [0, 0]
+                          })}
+                        />
+                      );
+                    });
+                  })()}
+                </MapContainer>
+              )}
+            </div>
+
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '20px', textAlign: 'center' }}>
+              <p style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.2em' }}>Scottish Golf Rating Toolkit • Proprietary Terrain Analysis Model</p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
