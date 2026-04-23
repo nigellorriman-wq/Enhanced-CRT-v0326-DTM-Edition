@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, MapPin, ChevronRight, X, Navigation2, Zap, Wind, Loader2, Database, CheckCircle2, AlertCircle, FileDown, Globe, Phone, Home } from 'lucide-react';
+import { Search, MapPin, ChevronRight, X, Navigation2, Zap, Wind, Loader2, Database, CheckCircle2, AlertCircle, FileDown, Globe, Phone, Home, BookOpen } from 'lucide-react';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
 import { jsPDF } from 'jspdf';
@@ -25,11 +25,12 @@ interface CourseContactInfo {
 interface CoursePlanningProps {
   onSelect: (lat: number, lng: number, name: string) => void;
   onClose: () => void;
+  initialCourse?: typeof golfCourses[0] | null;
 }
 
-export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClose }) => {
+export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClose, initialCourse = null }) => {
   const [search, setSearch] = useState('');
-  const [selectedCourse, setSelectedCourse] = useState<typeof golfCourses[0] | null>(null);
+  const [selectedCourse, setSelectedCourse] = useState<typeof golfCourses[0] | null>(initialCourse);
   const [weatherData, setWeatherData] = useState<WindData | null>(null);
   const [loadingWeather, setLoadingWeather] = useState(false);
   const [lidarSummary, setLidarSummary] = useState<LidarSummary | null>(null);
@@ -43,8 +44,42 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
     return osgbToWgs84(selectedCourse.easting, selectedCourse.northing);
   }, [selectedCourse]);
 
+  const fetchContactInfo = async (course: typeof golfCourses[0]) => {
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Find the official contact information for the golf course: ${course.site_name} in ${course.town}, Scotland. Return ONLY a JSON object with keys: website (full URL), phone (formatted with UK code), and full_address. Ensure it is the correct club and not a generic business nearby.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              website: { type: Type.STRING },
+              phone: { type: Type.STRING },
+              full_address: { type: Type.STRING }
+            },
+            required: ["website", "phone", "full_address"]
+          },
+          tools: [{ googleSearch: {} }],
+          toolConfig: { includeServerSideToolInvocations: true }
+        }
+      });
+
+      if (response.text) {
+        return JSON.parse(response.text.trim()) as CourseContactInfo;
+      }
+    } catch (error) {
+      console.error('Failed to fetch course contact info:', error);
+    }
+    return null;
+  };
+
   useEffect(() => {
     if (selectedCourse) {
+      setWeatherData(null);
+      setLidarSummary(null);
+      setCourseContactInfo(null);
       const { lat, lng } = osgbToWgs84(selectedCourse.easting, selectedCourse.northing);
 
       const fetchWeather = async () => {
@@ -100,49 +135,16 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         });
       };
 
-      const fetchContactInfo = async () => {
-        if (!selectedCourse) return;
+      const doFetchContact = async () => {
         setLoadingContact(true);
-        try {
-          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-          const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: `Find the official contact information for the golf course: ${selectedCourse.site_name} in ${selectedCourse.town}, Scotland. Return ONLY a JSON object with keys: website (full URL), phone (formatted with UK code), and full_address. Ensure it is the correct club and not a generic business nearby.`,
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  website: { type: Type.STRING },
-                  phone: { type: Type.STRING },
-                  full_address: { type: Type.STRING }
-                },
-                required: ["website", "phone", "full_address"]
-              },
-              tools: [{ googleSearch: {} }],
-              toolConfig: { includeServerSideToolInvocations: true }
-            }
-          });
-
-          if (response.text) {
-            const data = JSON.parse(response.text.trim());
-            setCourseContactInfo(data);
-          }
-        } catch (error) {
-          console.error('Failed to fetch course contact info:', error);
-          setCourseContactInfo(null);
-        } finally {
-          setLoadingContact(false);
-        }
+        const info = await fetchContactInfo(selectedCourse);
+        setCourseContactInfo(info);
+        setLoadingContact(false);
       };
 
-      const initAnalysis = async () => {
-        await fetchWeather();
-        await scanLidar();
-        await fetchContactInfo();
-      };
-
-      initAnalysis();
+      fetchWeather();
+      scanLidar();
+      doFetchContact();
     } else {
       setWeatherData(null);
       setLidarSummary(null);
@@ -155,7 +157,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
     const index = Math.round(deg / 22.5) % 16;
     return directions[index];
   };
-  
+
   const filtered = search && !selectedCourse ? golfCourses.filter(c => 
     c.facility_sub_type.toLowerCase() === 'golf course' &&
     c.site_name.toLowerCase().includes(search.toLowerCase())
@@ -168,113 +170,129 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
     }
   };
 
+  const drawCoursePage = async (doc: jsPDF, course: typeof golfCourses[0], weather: WindData | null, lidar: LidarSummary | null, contact: CourseContactInfo | null) => {
+    // Page Background
+    doc.setFillColor(2, 6, 23); // #020617
+    doc.rect(0, 0, 210, 297, 'F');
+
+    // Header
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(28);
+    doc.text(course.site_name.toUpperCase(), 20, 30);
+    
+    doc.setTextColor(96, 165, 250);
+    doc.setFontSize(14);
+    doc.text(`${course.town}, SCOTLAND`, 20, 38);
+
+    doc.setTextColor(150, 150, 150);
+    doc.setFontSize(9);
+    doc.text('REPORT GENERATED', 190, 28, { align: 'right' });
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(11);
+    doc.text(new Date().toLocaleDateString('en-GB'), 190, 34, { align: 'right' });
+
+    const startY = 50;
+
+    // Environment Card
+    doc.setDrawColor(255, 255, 255);
+    doc.setFillColor(30, 41, 59);
+    doc.roundedRect(20, startY, 80, 40, 5, 5, 'FD');
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(11);
+    doc.text('ENVIRONMENT', 25, startY + 8);
+    
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text('Prevailing Direction', 25, startY + 18);
+    doc.setTextColor(255, 255, 255);
+    if (weather) {
+      doc.text(`${getCardinalDirection(weather.avgDirectionDeg)} (${weather.avgDirectionDeg.toFixed(0)}°)`, 95, startY + 18, { align: 'right' });
+    } else {
+      doc.text('DATA UNAVAILABLE', 95, startY + 18, { align: 'right' });
+    }
+    
+    doc.setTextColor(150, 150, 150);
+    doc.text('Avg Wind Speed', 25, startY + 26);
+    doc.setTextColor(255, 255, 255);
+    doc.text(weather ? `${weather.avgSpeedMph.toFixed(1)} mph` : 'N/A', 95, startY + 26, { align: 'right' });
+    
+    doc.setTextColor(150, 150, 150);
+    doc.text('Max Gust', 25, startY + 34);
+    doc.setTextColor(255, 255, 255);
+    doc.text(weather ? `${weather.avgGustMph.toFixed(1)} mph` : 'N/A', 95, startY + 34, { align: 'right' });
+
+    // Terrain Card
+    doc.setFillColor(30, 41, 59);
+    doc.roundedRect(110, startY, 80, 40, 5, 5, 'FD');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(11);
+    doc.text('TERRAIN DATA', 115, startY + 8);
+    
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text('LiDAR Coverage', 115, startY + 18);
+    doc.setTextColor(255, 255, 255);
+    doc.text(lidar ? `${lidar.coveragePercent.toFixed(0)}%` : '0%', 185, startY + 18, { align: 'right' });
+    
+    doc.setTextColor(150, 150, 150);
+    doc.text('Max Resolution', 115, startY + 26);
+    doc.setTextColor(255, 255, 255);
+    doc.text(lidar?.maxResolution ? `${lidar.maxResolution.toFixed(1)}m` : 'N/A', 185, startY + 26, { align: 'right' });
+    
+    doc.setTextColor(150, 150, 150);
+    doc.text('Data Format', 115, startY + 34);
+    doc.setTextColor(255, 255, 255);
+    doc.text('DTM Phase 1-6', 185, startY + 34, { align: 'right' });
+
+    // Directory Card
+    const dirY = startY + 50;
+    if (contact) {
+      doc.setFillColor(30, 41, 59);
+      doc.roundedRect(20, dirY, 170, 35, 5, 5, 'FD');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(11);
+      doc.text('GOLF CLUB DIRECTORY', 25, dirY + 8);
+      
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text('Official Website', 25, dirY + 16);
+      doc.setTextColor(96, 165, 250);
+      doc.text(contact.website, 70, dirY + 16);
+      
+      doc.setTextColor(150, 150, 150);
+      doc.text('Telephone', 25, dirY + 23);
+      doc.setTextColor(255, 255, 255);
+      doc.text(contact.phone, 70, dirY + 23);
+      
+      doc.setTextColor(150, 150, 150);
+      doc.text('Registered Address', 25, dirY + 30);
+      doc.setTextColor(255, 255, 255);
+      const splitAddress = doc.splitTextToSize(contact.full_address, 110);
+      doc.text(splitAddress, 70, dirY + 30);
+    }
+
+    // Map/Topography Header
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(10);
+    doc.text('GEOGRAPHIC TOPOGRAPHY EXTRACT', 20, dirY + 45);
+
+    // Footer
+    doc.setFontSize(8);
+    doc.setTextColor(100, 100, 100);
+    doc.text('SCOTTISH GOLF RATING TOOLKIT • PROPRIETARY TERRAIN ANALYSIS MODEL', 105, 285, { align: 'center' });
+  };
+
   const handleExportPDF = async () => {
     if (!selectedCourse || !lidarSummary || !weatherData) return;
     
     setIsExporting(true);
     try {
       const pdf = new jsPDF('p', 'mm', 'a4');
-      const white = '#FFFFFF';
-      const blue = '#60a5fa';
-      const darkBlue = '#020617';
-      const slate = 'rgba(255,255,255,0.5)';
-      const bgCard = 'rgba(255,255,255,0.03)';
+      await drawCoursePage(pdf, selectedCourse, weatherData, lidarSummary, courseContactInfo);
       
-      // Page Background
-      pdf.setFillColor(2, 6, 23); // #020617
-      pdf.rect(0, 0, 210, 297, 'F');
-
-      // Header
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(28);
-      pdf.text(selectedCourse.site_name.toUpperCase(), 20, 30);
-      
-      pdf.setTextColor(96, 165, 250);
-      pdf.setFontSize(14);
-      pdf.text(`${selectedCourse.town}, SCOTLAND`, 20, 38);
-
-      pdf.setTextColor(150, 150, 150);
-      pdf.setFontSize(9);
-      pdf.text('REPORT GENERATED', 190, 28, { align: 'right' });
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFontSize(11);
-      pdf.text(new Date().toLocaleDateString('en-GB'), 190, 34, { align: 'right' });
-
-      // Environment Card (Vector)
-      pdf.setDrawColor(255, 255, 255);
-      pdf.setFillColor(30, 41, 59); // Slate-800 equivalent to match app cards
-      pdf.roundedRect(20, 50, 80, 50, 5, 5, 'FD');
-      
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFontSize(12);
-      pdf.text('ENVIRONMENT', 25, 60);
-      
-      pdf.setFontSize(9);
-      pdf.setTextColor(150, 150, 150);
-      pdf.text('Prevailing Direction', 25, 70);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text(`${getCardinalDirection(weatherData.avgDirectionDeg)} (${weatherData.avgDirectionDeg.toFixed(0)}°)`, 95, 70, { align: 'right' });
-      
-      pdf.setTextColor(150, 150, 150);
-      pdf.text('Avg Wind Speed', 25, 80);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text(`${weatherData.avgSpeedMph.toFixed(1)} mph`, 95, 80, { align: 'right' });
-      
-      pdf.setTextColor(150, 150, 150);
-      pdf.text('Max Gust', 25, 90);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text(`${weatherData.avgGustMph.toFixed(1)} mph`, 95, 90, { align: 'right' });
-
-      // Terrain Card (Vector)
-      pdf.setFillColor(30, 41, 59); // Slate-800 equivalent
-      pdf.roundedRect(110, 50, 80, 50, 5, 5, 'FD');
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFontSize(12);
-      pdf.text('TERRAIN DATA', 115, 60);
-      
-      pdf.setFontSize(9);
-      pdf.setTextColor(150, 150, 150);
-      pdf.text('LiDAR Coverage', 115, 70);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text(`${lidarSummary.coveragePercent.toFixed(0)}%`, 185, 70, { align: 'right' });
-      
-      pdf.setTextColor(150, 150, 150);
-      pdf.text('Max Resolution', 115, 80);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text(lidarSummary.maxResolution ? `${lidarSummary.maxResolution.toFixed(1)}m` : 'N/A', 185, 80, { align: 'right' });
-      
-      pdf.setTextColor(150, 150, 150);
-      pdf.text('Data Format', 115, 90);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text('DTM Phase 1-6', 185, 90, { align: 'right' });
-
-      // Directory Card (Vector)
-      if (courseContactInfo) {
-        pdf.setFillColor(30, 41, 59); // Slate-800 equivalent
-        pdf.roundedRect(20, 110, 170, 45, 5, 5, 'FD');
-        pdf.setFontSize(12);
-        pdf.text('GOLF CLUB DIRECTORY', 25, 120);
-        
-        pdf.setFontSize(9);
-        pdf.setTextColor(150, 150, 150);
-        pdf.text('Official Website', 25, 130);
-        pdf.setTextColor(96, 165, 250);
-        pdf.text(courseContactInfo.website, 70, 130);
-        
-        pdf.setTextColor(150, 150, 150);
-        pdf.text('Telephone', 25, 138);
-        pdf.setTextColor(255, 255, 255);
-        pdf.text(courseContactInfo.phone, 70, 138);
-        
-        pdf.setTextColor(150, 150, 150);
-        pdf.text('Registered Address', 25, 146);
-        pdf.setTextColor(255, 255, 255);
-        const splitAddress = pdf.splitTextToSize(courseContactInfo.full_address, 110);
-        pdf.text(splitAddress, 70, 146);
-      }
-
-      // Map Capture (The only bitmap part)
+      // Map Capture (Only for single export)
       if (pdfRef.current) {
         const mapElement = pdfRef.current.querySelector('.leaflet-container');
         if (mapElement) {
@@ -283,25 +301,20 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
             useCORS: true,
             backgroundColor: '#0f172a',
             scale: 2,
-            allowTaint: false, // Set to false to prevent tainted canvases with cross-origin tiles
+            allowTaint: false,
           });
           const mapImgData = mapCanvas.toDataURL('image/jpeg', 0.8);
           // Position map lower down
-          pdf.roundedRect(20, 165, 170, 100, 5, 5, 'D'); // Border for map
-          pdf.addImage(mapImgData, 'JPEG', 20, 165, 170, 100);
+          pdf.roundedRect(20, 172, 170, 100, 5, 5, 'D'); // Border for map
+          pdf.addImage(mapImgData, 'JPEG', 20, 172, 170, 100);
           
           pdf.setFillColor(0, 0, 0, 0.6);
-          pdf.rect(25, 170, 50, 8, 'F');
+          pdf.rect(25, 175, 50, 8, 'F');
           pdf.setTextColor(255, 255, 255);
           pdf.setFontSize(7);
-          pdf.text('SITE TOPOGRAPHY EXTRACT', 30, 175);
+          pdf.text('SITE TOPOGRAPHY EXTRACT', 30, 180);
         }
       }
-
-      // Footer
-      pdf.setFontSize(8);
-      pdf.setTextColor(100, 100, 100);
-      pdf.text('SCOTTISH GOLF RATING TOOLKIT • PROPRIETARY TERRAIN ANALYSIS MODEL', 105, 285, { align: 'center' });
 
       pdf.save(`${selectedCourse.site_name.replace(/\s+/g, '_')}_Analysis.pdf`);
     } catch (error) {
@@ -320,14 +333,14 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
           </div>
           <h1 className="text-3xl font-bold text-blue-500 tracking-tighter">Course Planning</h1>
         </div>
-        <button onClick={onClose} className="p-2 bg-slate-800 rounded-full text-slate-400 active:scale-90 transition-all"><X size={20} /></button>
+        <button onClick={onClose} className="p-2 bg-slate-800 rounded-full text-slate-400 active:scale-90 transition-all"><Home size={20} /></button>
       </header>
 
       <p className="text-white-400 text-xs mb-6 px-1 leading-relaxed">
         Pre-visit analysis tool. Search for a course below.
       </p>
 
-      <div className="flex flex-col gap-4 shrink-0 mb-6">
+      <div className="flex flex-col gap-4 shrink-0 mb-6 px-1">
         <div className="relative">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
           <input 
@@ -352,18 +365,20 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
           <button 
             onClick={handleGo}
             disabled={!selectedCourse}
-            className="flex-1 bg-blue-600 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-blue-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+            className="flex-1 bg-blue-600 disabled:bg-slate-800 disabled:text-slate-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-blue-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2 uppercase text-sm"
           >
             <Zap size={18} />
-            <span>GO TO COURSE</span>
+            <span>Go to course</span>
           </button>
-          <button 
-            onClick={() => onSelect(56.3436, -2.8025, 'Manual Roam')}
-            className="flex-1 bg-slate-800 border border-white/10 text-slate-300 font-bold py-4 rounded-2xl shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-          >
-            <Navigation2 size={18} />
-            <span>SKIP SEARCH</span>
-          </button>
+          {(selectedCourse || search) && (
+            <button 
+              onClick={() => onSelect(56.3436, -2.8025, 'Manual Roam')}
+              className="flex-1 bg-slate-800 border border-white/10 text-slate-300 font-bold py-4 rounded-2xl shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 uppercase text-sm"
+            >
+              <Navigation2 size={18} />
+              <span>Skip Search</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -399,7 +414,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         )}
 
         {selectedCourse && (
-          <div className="bg-blue-500/5 border border-blue-500/20 p-6 rounded-[2rem] flex flex-col md:flex-row items-center md:items-start gap-8 animate-in zoom-in-95 duration-300">
+          <div className="bg-blue-500/5 border border-blue-500/20 p-6 rounded-[2rem] flex flex-col md:flex-row flex-wrap items-center md:items-start gap-8 animate-in zoom-in-95 duration-300">
             <div className="flex flex-col items-center md:items-start text-center md:text-left relative w-full md:w-auto">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-4 shadow-xl shadow-blue-600/40">
                 <MapPin size={32} />
@@ -412,7 +427,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
               
               <button 
                 onClick={handleExportPDF}
-                disabled={isExporting || loadingWeather || lidarSummary?.scanning || loadingContact || !weatherData || !lidarSummary || !courseContactInfo}
+                disabled={isExporting || loadingWeather || lidarSummary?.scanning || loadingContact}
                 className="w-full md:w-auto bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-white/10 text-white font-bold py-3 px-6 rounded-2xl shadow-xl hover:bg-slate-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 group"
               >
                 {isExporting ? <Loader2 size={18} className="animate-spin text-blue-500" /> : <FileDown size={18} className={`${(loadingWeather || lidarSummary?.scanning || loadingContact) ? 'text-slate-500' : 'text-blue-400'} group-hover:scale-110 transition-transform`} />}

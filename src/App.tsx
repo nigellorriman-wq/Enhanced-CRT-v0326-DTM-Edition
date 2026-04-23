@@ -17,7 +17,6 @@ import {
   Download,
   Upload,
   HelpCircle,
-  X,
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
@@ -56,6 +55,8 @@ import { WCSAnalyzer } from './components/WCSAnalyzer';
 
 import { CoursePlanning } from './components/CoursePlanning';
 import { PlanningReportView } from './components/PlanningReportView';
+import { golfCourses } from './constants/golfCourses';
+import { osgbToWgs84 } from './utils/coords';
 
 /** --- LIDAR GRID --- **/
 const lidarCoverageCache = new Map<string, boolean>();
@@ -132,10 +133,11 @@ const SelectionHandler = ({ active, onSelectionComplete }: { active: boolean, on
 
 /** --- TYPES --- **/
 // Fix: Renamed View to AppView to resolve "Cannot find name 'AppView'" errors on lines 839 and 1069
-export type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs' | 'planning' | 'planning_report';
+export type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs' | 'planning' | 'planning_report' | 'course_browser';
 export type UnitSystem = 'Yards' | 'Metres';
 export type FontSize = 'small' | 'medium' | 'large';
 export type RatingGender = 'Men' | 'Women'; 
+export type TeeboxColor = 'Black' | 'Blue' | 'Gold' | 'Green' | 'Grey' | 'Orange' | 'Red' | 'Silver' | 'White' | 'Yellow' | 'Other';
 export type TrackProfileView = 'Rater\'s Walk' | 'Scratch' | 'Bogey'; 
 export type OvalMode = 'off' | 'scratch' | 'bogey';
 
@@ -168,6 +170,7 @@ export interface SavedRecord {
   raterPathPoints?: GeoPoint[]; 
   pivotPoints?: PivotRecord[]; 
   genderRated?: RatingGender; 
+  teebox?: TeeboxColor;
   effectivePaths?: { 
     scratch: GeoPoint[];
     bogey: GeoPoint[];
@@ -1147,7 +1150,7 @@ const UserManual: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <CaseSensitive size={24} strokeWidth={2.5} />
           </button>
           <button onClick={onClose} className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90 transition-all border border-white/10 shadow-lg">
-            <X size={24} />
+            <Home size={24} />
           </button>
         </div>
       </div>
@@ -1588,9 +1591,26 @@ const ReportView: React.FC<{
           ) : (
             <>
               <div className="grid grid-cols-3 gap-6 mb-8">
-                <div className="bg-black border border-white/10 rounded-2xl p-4">
+                <div className="bg-black border border-white/10 rounded-2xl p-4 text-left">
                   <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest block mb-2">Identification</span>
                   <div className="text-2xl font-bold text-white mb-1">Green #{currentGreen?.holeNumber || currentIndex + 1}</div>
+                  <div className="flex flex-col gap-1 mt-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-white/40 uppercase">Rating For:</span>
+                      <span className="text-[10px] font-bold text-white uppercase">{currentGreen?.genderRated || 'N/A'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-white/40 uppercase">Teebox:</span>
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-2.5 h-2.5 rounded-full border border-white/20" style={{ 
+                          backgroundColor: {
+                            Black: '#000000', Blue: '#2563eb', Gold: '#D3AF37', Green: '#059669', Grey: '#64748b', Orange: '#ea580c', Red: '#e11d48', Silver: '#C0C0C0', White: '#ffffff', Yellow: '#facc15', Other: '#334155'
+                          }[currentGreen?.teebox || 'White']
+                        }}></div>
+                        <span className="text-[10px] font-bold text-white uppercase">{currentGreen?.teebox || 'N/A'}</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div className="bg-black border border-white/10 rounded-2xl p-4">
                   <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest block mb-2">Dimensions</span>
@@ -1979,7 +1999,7 @@ const TerrainManager: React.FC<{
             </div>
           </div>
           <button onClick={onClose} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90">
-            <X size={20} />
+            <Home size={20} />
           </button>
         </div>
 
@@ -2255,6 +2275,95 @@ const MapRef = ({ onMap }: { onMap: (map: L.Map) => void }) => {
   return null;
 };
 
+const CourseBrowser: React.FC<{ 
+  onSelectCourse: (course: typeof golfCourses[0]) => void,
+  onBack: () => void 
+}> = ({ onSelectCourse, onBack }) => {
+  const uniqueCourses = useMemo(() => {
+    const seen = new Set<string>();
+    return golfCourses.filter(c => {
+      const key = `${c.easting}-${c.northing}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, []);
+
+  const courseMarkers = useMemo(() => {
+    return uniqueCourses.map(course => {
+      const { lat, lng } = osgbToWgs84(course.easting, course.northing);
+      return { course, lat, lng };
+    });
+  }, [uniqueCourses]);
+
+  const customIcon = L.divIcon({
+    className: 'custom-div-icon',
+    html: `<div style="background-color: #2563eb; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 10px rgba(0,0,0,0.3);"></div>`,
+    iconSize: [12, 12],
+    iconAnchor: [6, 6]
+  });
+
+  return (
+    <div className="flex-1 flex flex-col relative animate-in fade-in duration-500 overflow-hidden">
+      <header className="bg-slate-950/80 backdrop-blur-md border-b border-white/10 p-4 flex items-center justify-between z-[2000]">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90 transition-all">
+            <Home size={20} />
+          </button>
+          <div>
+            <h1 className="text-sm font-black uppercase tracking-tighter text-blue-500">Course Browser</h1>
+            <p className="text-[9px] font-bold text-white/40 uppercase tracking-widest leading-none mt-0.5">Explore Scottish Courses</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-600/10 border border-blue-500/20 rounded-full">
+          <MapPin size={12} className="text-blue-400" />
+          <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">{uniqueCourses.length} Courses</span>
+        </div>
+      </header>
+
+      <div className="flex-1 relative z-[1000]">
+        <MapContainer 
+          center={[56.4907, -4.2026]} 
+          zoom={7} 
+          style={{ height: '100%', width: '100%', background: '#020617' }}
+          zoomControl={false}
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          {courseMarkers.map((m, idx) => (
+            <Marker 
+              key={`${m.course.site_name}-${idx}`}
+              position={[m.lat, m.lng]} 
+              icon={customIcon}
+              eventHandlers={{
+                click: () => onSelectCourse(m.course)
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -10]} opacity={1}>
+                <div className="bg-slate-900 text-white p-2 border border-white/10 rounded-lg shadow-xl min-w-[120px]">
+                  <p className="text-[10px] font-black uppercase text-blue-400 mb-0.5 leading-none">{m.course.site_name}</p>
+                  <p className="text-[8px] font-bold text-white/60 uppercase tracking-widest">{m.course.town}</p>
+                </div>
+              </Tooltip>
+            </Marker>
+          ))}
+        </MapContainer>
+      </div>
+
+      <div className="absolute inset-x-0 bottom-4 z-[2000] px-4 pointer-events-none">
+        <div className="mx-auto max-w-xs bg-slate-900/90 backdrop-blur-md border border-white/10 p-3 rounded-2xl shadow-2xl flex items-center gap-3">
+          <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center">
+            <Info size={14} className="text-blue-400" />
+          </div>
+          <p className="text-[9px] text-blue-100/70 font-medium leading-tight">Click a pin to start planning for that course. Hover to see details.</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>('landing');
   const [units, setUnits] = useState<UnitSystem>('Yards');
@@ -2271,6 +2380,7 @@ const App: React.FC = () => {
   const [currentPivots, setCurrentPivots] = useState<PivotRecord[]>([]);
   const [holeNum, setHoleNum] = useState(1);
   const [ratingGender, setRatingGender] = useState<RatingGender>('Men');
+  const [teeboxColor, setTeeboxColor] = useState<TeeboxColor>('White');
   const [showPivotMenu, setShowPivotMenu] = useState(false);
   const [pendingPivotType, setPendingPivotType] = useState<PivotRecord['type'] | null>(null);
   const [mapActive, setMapActive] = useState(false);
@@ -2293,6 +2403,7 @@ const App: React.FC = () => {
   const [activeLidarStyles, setActiveLidarStyles] = useState<string>('');
   const [activeCoverageId, setActiveCoverageId] = useState<string | null>(null);
   const [planningPivots, setPlanningPivots] = useState<PivotRecord[]>([]);
+  const [selectedCourseForPlanning, setSelectedCourseForPlanning] = useState<typeof golfCourses[0] | null>(null);
 
   React.useEffect(() => {
     if (mapStyle === 'LiDAR DTM') {
@@ -2759,11 +2870,17 @@ const App: React.FC = () => {
   }, [pos, trkActive, isFollowing]);
 
   const saveRecord = useCallback((record: Omit<SavedRecord, 'id' | 'date'>) => {
-    const newRecord: SavedRecord = { ...record, id: Math.random().toString(36).substr(2, 9), date: Date.now() };
+    const newRecord: SavedRecord = { 
+      genderRated: ratingGender,
+      teebox: teeboxColor,
+      ...record, 
+      id: Math.random().toString(36).substr(2, 9), 
+      date: Date.now() 
+    };
     const updated = [newRecord, ...history];
     setHistory(updated);
     localStorage.setItem('scottish_golf_rating_toolkit_final', JSON.stringify(updated));
-  }, [history]);
+  }, [history, ratingGender, teeboxColor]);
 
   const analysis = useMemo(() => {
     const pts = viewingRecord?.type === 'Green' ? viewingRecord.points : mapPoints;
@@ -2971,7 +3088,8 @@ const App: React.FC = () => {
       const pivotData = item.pivotPoints ? `|Pivots:${JSON.stringify(item.pivotPoints.map(p => ({ lat: p.point.lat, lng: p.point.lng, alt: p.point.alt, type: p.type })))}` : '';
       const planningTag = item.isPlanning ? '|Planning:true' : '';
       const genderTag = item.genderRated ? `|Gender:${item.genderRated}` : '';
-      kml += `<Placemark><name>${item.type} - Hole ${item.holeNumber || '?'}</name><description>Hole:${item.holeNumber || '?'}; Type: ${item.type}${pivotData}${planningTag}${genderTag}</description>${item.type === 'Green' ? `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords} ${item.points[0].lng},${item.points[0].lat},${item.points[0].alt || 0}</coordinates></LinearRing></outerBoundaryIs></Polygon>` : `<LineString><coordinates>${coords}</coordinates></LineString>`}</Placemark>`;
+      const teeboxTag = item.teebox ? `|Teebox:${item.teebox}` : '';
+      kml += `<Placemark><name>${item.type} - Hole ${item.holeNumber || '?'}</name><description>Hole:${item.holeNumber || '?'}; Type: ${item.type}${pivotData}${planningTag}${genderTag}${teeboxTag}</description>${item.type === 'Green' ? `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coords} ${item.points[0].lng},${item.points[0].lat},${item.points[0].alt || 0}</coordinates></LinearRing></outerBoundaryIs></Polygon>` : `<LineString><coordinates>${coords}</coordinates></LineString>`}</Placemark>`;
     });
     kml += `</Document></kml>`;
     const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
@@ -3014,6 +3132,10 @@ const App: React.FC = () => {
         const genderMatch = descStr.match(/\|Gender:(Men|Women)/);
         if (genderMatch) genderRated = genderMatch[1] as RatingGender;
 
+        let teebox: TeeboxColor | undefined = undefined;
+        const teeboxMatch = descStr.match(/\|Teebox:(\w+)/);
+        if (teeboxMatch) teebox = teeboxMatch[1] as TeeboxColor;
+
         const record: SavedRecord = { 
           id: Math.random().toString(36).substr(2, 9), 
           date: Date.now(), 
@@ -3022,7 +3144,8 @@ const App: React.FC = () => {
           holeNumber: extractedHole || undefined, 
           primaryValue: fileName.substring(0, 6) + "...", 
           secondaryValue: 'KML Data',
-          genderRated
+          genderRated,
+          teebox
         };
         newItems.push(record);
       }
@@ -3061,6 +3184,10 @@ const App: React.FC = () => {
         const genderMatch = descStr.match(/\|Gender:(Men|Women)/);
         if (genderMatch) genderRated = genderMatch[1] as RatingGender;
 
+        let teebox: TeeboxColor | undefined = undefined;
+        const teeboxMatch = descStr.match(/\|Teebox:(\w+)/);
+        if (teeboxMatch) teebox = teeboxMatch[1] as TeeboxColor;
+
         if (isTrack || isPlanning) {
           let pivotPoints: PivotRecord[] = [];
           const pivotMatch = descStr.match(/\|Pivots:(.*?)(\||$)/);
@@ -3084,7 +3211,8 @@ const App: React.FC = () => {
             holeNumber: extractedHole || undefined, 
             primaryValue: nameStr || `Track ${i+1}`, 
             isPlanning: true,
-            genderRated
+            genderRated,
+            teebox
           };
           tracks.push(record);
         }
@@ -3136,6 +3264,10 @@ const App: React.FC = () => {
         const genderMatch = descStr.match(/\|Gender:(Men|Women)/);
         if (genderMatch) genderRated = genderMatch[1] as RatingGender;
 
+        let teebox: TeeboxColor | undefined = undefined;
+        const teeboxMatch = descStr.match(/\|Teebox:(\w+)/);
+        if (teeboxMatch) teebox = teeboxMatch[1] as TeeboxColor;
+
         if (isActuallyGreen) {
           const record: SavedRecord = { 
             id: Math.random().toString(36).substr(2, 9), 
@@ -3145,7 +3277,8 @@ const App: React.FC = () => {
             holeNumber: extractedHole || undefined, 
             primaryValue: nameStr || `Green ${i+1}`, 
             secondaryValue: 'Report Data',
-            genderRated
+            genderRated,
+            teebox
           };
           greens.push(record);
         }
@@ -3170,12 +3303,12 @@ const App: React.FC = () => {
       <div className="h-[env(safe-area-inset-top)] bg-[#0f172a] shrink-0"></div>
       {view === 'landing' ? (
         <div className="flex-1 flex flex-col p-6 overflow-y-auto no-scrollbar animate-in fade-in duration-700">
-          <header className="mb-12 mt-8 flex flex-col items-center text-center relative">
+          <header className="mb-12 mt-8 flex flex-col items-center text-center relative max-w-4xl mx-auto w-full">
             <h1 className="text-5xl tracking-tighter font-bold text-blue-500">Scottish Golf</h1>
             <p className="text-white text-[11px] font-bold tracking-[0.4em] uppercase mt-2 opacity-80">
-              Enhanced Course Rating Toolkit v03.26
+              Enhanced Course Rating Toolkit v04.26
               <br />
-              <span className="text-yellow-400">DTM Edition</span>
+              <span className="text-yellow-400">Desktop Edition</span>
             </p>
             {gpsError && (
               <div className="mt-6 bg-rose-500/20 border border-rose-500/30 p-4 rounded-2xl flex flex-col gap-3 animate-pulse select-text">
@@ -3198,53 +3331,96 @@ const App: React.FC = () => {
               </div>
             )}
           </header>
-          <div className="flex flex-col gap-6">
-            <button onClick={() => { setIsPlanningSession(false); setIsFollowing(true); setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto w-full">
+            <button onClick={() => { setIsPlanningSession(false); setIsFollowing(true); setViewingRecord(null); setTrkPoints([]); setCurrentPivots([]); setView('track'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all h-full">
               <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><Navigation2 size={28} /></div>
-              <h2 className="text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-blue-500">Distance tracker</h2>
               <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Real-time distance measurement and elevation change</p>
             </button>
-            <div className="bg-slate-900/50 border border-white/5 rounded-[1.8rem] py-4 px-6 flex justify-around items-center">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-white">Rating For:</span>
-                <div className="flex bg-slate-800 rounded-full p-1 border border-white/10">
-                    <button onClick={() => setRatingGender('Men')} className={`px-4 py-2 rounded-full text-sm font-semibold transition-all ${ratingGender === 'Men' ? 'bg-blue-600 text-white' : 'text-white'}`}>Men</button>
-                    <button onClick={() => setRatingGender('Women')} className={`px-4 py-2 rounded-full text-sm font-semibold transition-all ${ratingGender === 'Women' ? 'bg-blue-600 text-white' : 'text-white'}`}>Women</button>
+            <div className="flex flex-col gap-4 bg-slate-900/50 border border-white/5 rounded-[2rem] py-6 px-4 h-full justify-center">
+                <div className="flex flex-col items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/60">Rating For:</span>
+                    <div className="flex bg-slate-800 rounded-full p-1 border border-white/10 shadow-inner w-full">
+                        <button onClick={() => setRatingGender('Men')} className={`flex-1 px-2 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all duration-300 ${ratingGender === 'Men' ? 'bg-blue-600 text-white shadow-lg' : 'text-white/40 hover:text-white/60'}`}>Men</button>
+                        <button onClick={() => setRatingGender('Women')} className={`flex-1 px-2 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all duration-300 ${ratingGender === 'Women' ? 'bg-blue-600 text-white shadow-lg' : 'text-white/40 hover:text-white/60'}`}>Women</button>
+                    </div>
+                </div>
+
+                <div className="flex flex-col items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/60">Teebox:</span>
+                    <div className="relative group w-full">
+                      <select 
+                          value={teeboxColor} 
+                          onChange={(e) => setTeeboxColor(e.target.value as TeeboxColor)}
+                          className="w-full appearance-none px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-[0.1em] transition-all duration-300 border border-white/10 cursor-pointer shadow-xl text-center focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                          style={{
+                            backgroundColor: {
+                              Black: '#000000',
+                              Blue: '#2563eb',
+                              Gold: '#D3AF37',
+                              Green: '#059669',
+                              Grey: '#64748b',
+                              Orange: '#ea580c',
+                              Red: '#e11d48',
+                              Silver: '#C0C0C0',
+                              White: '#ffffff',
+                              Yellow: '#facc15',
+                              Other: '#334155'
+                            }[teeboxColor],
+                            color: ['Black', 'Blue', 'Green', 'Grey', 'Orange', 'Red', 'Other'].includes(teeboxColor) ? '#ffffff' : '#000000'
+                          }}
+                      >
+                          {['Black', 'Blue', 'Gold', 'Green', 'Grey', 'Orange', 'Red', 'Silver', 'White', 'Yellow', 'Other'].map(c => (
+                              <option key={c} value={c} className="bg-slate-900 text-white">{c}</option>
+                          ))}
+                      </select>
+                      <div className={`absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none transition-colors ${['Black', 'Blue', 'Green', 'Grey', 'Orange', 'Red', 'Other'].includes(teeboxColor) ? 'text-white' : 'text-black'}`}>
+                          <ChevronDown size={12} />
+                      </div>
+                    </div>
                 </div>
             </div>
-            <button onClick={() => { setIsPlanningSession(false); setIsFollowing(true); setViewingRecord(null); setMapPoints([]); setMapCompleted(false); setView('green'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+            <button onClick={() => { setIsPlanningSession(false); setIsFollowing(true); setViewingRecord(null); setMapPoints([]); setMapCompleted(false); setView('green'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all h-full">
               <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-emerald-600/40"><Target size={28} /></div>
-              <h2 className="text-2xl font-bold mb-2 uppercase text-emerald-500">Green Mapper</h2>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-emerald-500">Green Mapper</h2>
               <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Green mapping and Effective Green Diameter</p>
             </button>
 
 
-            <button onClick={() => { setIsPlanningSession(true); setViewingRecord(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+            <button onClick={() => { setIsPlanningSession(true); setViewingRecord(null); setSelectedCourseForPlanning(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all h-full">
               <div className="w-16 h-16 bg-yellow-500/80 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-yellow-600/40"><LampDesk size={28} /></div>
-              <h2 className="text-2xl font-bold mb-2 uppercase text-yellow-500">Course Planning</h2>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-yellow-500">Course Planning</h2>
               <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Pre-visit course search for LiDAR data and 3D analysis</p>
             </button>
 
-            <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer">
+            <button onClick={() => { setView('course_browser'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all h-full">
+              <div className="w-16 h-16 bg-blue-500 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><MapPin size={28} /></div>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-blue-500">Course Browser</h2>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Interactive map of all Scottish golf courses</p>
+            </button>
+
+            <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer h-full">
               <div className="w-16 h-16 bg-rose-700 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-rose-700/40"><FileText size={28} /></div>
-              <h2 className="text-2xl font-bold mb-2 uppercase text-rose-700">Green Report Tool</h2>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-rose-700">Green Report Tool</h2>
               <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Batch process KML greens into PDF reports</p>
               <input type="file" accept=".kml" onChange={importKMLForReport} className="hidden" />
             </label>
 
-            <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer">
+            <label className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all cursor-pointer h-full">
               <div className="w-16 h-16 bg-amber-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-amber-600/40"><ChartSpline size={28} /></div>
-              <h2 className="text-2xl font-bold mb-2 uppercase text-amber-500">Planning Report Tool</h2>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-amber-500">Planning Report Tool</h2>
               <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Generate 3D profiles for surveyed or planned holes</p>
               <input type="file" accept=".kml" onChange={importKMLForPlanningReport} className="hidden" />
             </label>
-            <button onClick={() => { setViewingRecord(null); setView('stimp'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all">
+            <button onClick={() => { setViewingRecord(null); setView('stimp'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all h-full">
               <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-emerald-600/40"><Gauge size={28} /></div>
-              <h2 className="text-2xl font-bold mb-2 uppercase text-emerald-500">Stimp Slopes</h2>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-emerald-500">Stimp Slopes</h2>
               <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Speed correction for sloping greens</p>
             </button>
-            <button onClick={() => setView('manual')} className="mt-2 bg-slate-800/50 border border-white/10 rounded-[1.8rem] py-6 flex items-center justify-center gap-4 active:bg-slate-700 transition-colors">
-              <BookOpen size={20} className="text-blue-400" />
-              <span className="text-[13px] font-bold uppercase tracking-widest text-white">User Manual</span>
+            <button onClick={() => setView('manual')} className="bg-slate-800/50 border border-white/10 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:bg-slate-700 transition-colors h-full">
+              <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-6 shadow-xl border border-blue-500/30"><BookOpen size={28} className="text-blue-400" /></div>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-white tracking-widest">User Manual</h2>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Interactive guide and technical documentation</p>
             </button>
 {/* 
             <button onClick={() => setView('wcs')} className="mt-2 bg-slate-800/50 border border-white/10 rounded-[1.8rem] py-6 flex items-center justify-center gap-4 active:bg-slate-700 transition-colors">
@@ -3252,12 +3428,12 @@ const App: React.FC = () => {
               <span className="text-[13px] font-bold uppercase tracking-widest text-white">WCS Capabilities Analysis</span>
             </button>
             */}
-            <div className="flex gap-4 mt-2">
-               <button onClick={exportKML} className="flex-1 bg-slate-800/50 border border-blue-500/20 rounded-[1.8rem] py-6 flex items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-lg"><Download size={18} className="text-blue-500" /><span className="text-[10px] font-bold uppercase tracking-widest text-white">Export</span></button>
-               <label className="flex-1 bg-slate-800/50 border border-emerald-500/20 rounded-[1.8rem] py-6 flex items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-lg cursor-pointer"><Upload size={18} className="text-emerald-500" /><span className="text-[10px] font-bold uppercase tracking-widest text-white">Import</span><input type="file" accept=".kml" onChange={importKML} className="hidden" /></label>
+            <div className="flex gap-4 h-full">
+               <button onClick={exportKML} className="flex-1 bg-slate-800/50 border border-blue-500/20 rounded-[2.5rem] p-10 flex flex-col items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-2xl"><Download size={28} className="text-blue-500" /><span className="text-xl font-bold uppercase tracking-widest text-white">Export</span></button>
+               <label className="flex-1 bg-slate-800/50 border border-emerald-500/20 rounded-[2.5rem] p-10 flex flex-col items-center justify-center gap-3 active:bg-slate-700 transition-colors shadow-2xl cursor-pointer"><Upload size={28} className="text-emerald-500" /><span className="text-xl font-bold uppercase tracking-widest text-white">Import</span><input type="file" accept=".kml" onChange={importKML} className="hidden" /></label>
             </div>
           </div>
-          <footer className="mt-auto pb-6 pt-12">
+          <footer className="mt-auto pb-6 pt-12 max-w-6xl mx-auto w-full">
             {history.length > 0 && (
               <div className="mb-6">
                 <div className="flex items-center justify-between px-2 mb-4">
@@ -3324,27 +3500,36 @@ const App: React.FC = () => {
             }
           }}
         />
+      ) : view === 'course_browser' ? (
+        <CourseBrowser 
+          onBack={() => setView('landing')}
+          onSelectCourse={(course) => {
+            setSelectedCourseForPlanning(course);
+            setView('planning');
+          }}
+        />
       ) : view === 'planning' ? (
         <CoursePlanning 
-          onClose={() => { setIsPlanningSession(false); setView('landing'); }} 
-      onSelect={async (lat, lng, name) => {
-        setIsPlanningSession(true);
-        setIsFollowing(true);
-        setMapLockKey(k => k + 1);
-        setMapStyle('LiDAR DTM');
-        setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
-        setPos({ lat, lng, accuracy: 0.5, timestamp: Date.now(), alt: null, altAccuracy: null, source: 'Manual' });
-        
-        // Clear unsaved GeoTIFFs when switching courses
-        await lidarGeoTiffService.clearUnsaved();
-        const tiffs = await lidarGeoTiffService.loadAll();
-        setOfflineGeoTiffs(tiffs);
-        setActiveGeoTiffOverlays({});
-        
-        setView('track');
-      }} 
-    />
-  ) : (
+          initialCourse={selectedCourseForPlanning}
+          onClose={() => { setIsPlanningSession(false); setView('landing'); setSelectedCourseForPlanning(null); }} 
+          onSelect={async (lat, lng, name) => {
+            setIsPlanningSession(true);
+            setIsFollowing(true);
+            setMapLockKey(k => k + 1);
+            setMapStyle('LiDAR DTM');
+            setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
+            setPos({ lat, lng, accuracy: 0.5, timestamp: Date.now(), alt: null, altAccuracy: null, source: 'Manual' });
+            
+            // Clear unsaved GeoTIFFs when switching courses
+            await lidarGeoTiffService.clearUnsaved();
+            const tiffs = await lidarGeoTiffService.loadAll();
+            setOfflineGeoTiffs(tiffs);
+            setActiveGeoTiffOverlays({});
+            
+            setView('track');
+          }} 
+        />
+      ) : (
         <div className="flex-1 flex flex-col relative animate-in slide-in-from-right duration-300">
           <div className="absolute top-0 left-0 right-0 z-[1000] p-4 flex justify-between pointer-events-none">
           <button onClick={() => { 
@@ -3772,7 +3957,7 @@ const App: React.FC = () => {
                     <h3 className="text-lg font-black uppercase tracking-tighter">LiDAR Diagnostic Data</h3>
                   </div>
                   <button onClick={() => setShowLidarDebug(false)} className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center text-white active:scale-90 transition-all pointer-events-auto">
-                    <X size={20} />
+                    <Home size={20} />
                   </button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-6 space-y-6 font-mono text-xs select-text">
