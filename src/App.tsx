@@ -3306,7 +3306,7 @@ const App: React.FC = () => {
           <header className="mb-12 mt-8 flex flex-col items-center text-center relative max-w-4xl mx-auto w-full">
             <h1 className="text-5xl tracking-tighter font-bold text-blue-500">Scottish Golf</h1>
             <p className="text-white text-[11px] font-bold tracking-[0.4em] uppercase mt-2 opacity-80">
-              Enhanced Course Rating Toolkit v04.26
+              Enhanced Course Rating Toolkit v05.26
               <br />
               <span className="text-yellow-400">Desktop Edition</span>
             </p>

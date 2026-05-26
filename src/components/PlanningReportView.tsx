@@ -74,6 +74,10 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   const isLoadingLidarRef = useRef(isLoadingLidar);
   const reportRef = useRef<HTMLDivElement>(null);
 
+  // Client-side caches to avoid redundant API calls and prevent freezing/hanging in LiDAR gaps
+  const elevationCache = useRef<Map<string, number | null>>(new Map());
+  const deadZoneCache = useRef<Set<string>>(new Set());
+
   useEffect(() => { profilesRef.current = profiles; }, [profiles]);
   useEffect(() => { isLoadingLidarRef.current = isLoadingLidar; }, [isLoadingLidar]);
 
@@ -150,34 +154,77 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   }, [isSummaryPage, currentTrack, tracks]);
 
   const fetchLidar = async (lat: number, lng: number): Promise<number | null> => {
+    // Check cache first to avoid slamming the network/services
+    const preciseKey = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+    if (elevationCache.current.has(preciseKey)) {
+      return elevationCache.current.get(preciseKey) ?? null;
+    }
+
+    // Coarse-grained grid check (approx. 110mx110m cells) to quickly bypass massive dead zones/coverage gaps
+    const coarseKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+    if (deadZoneCache.current.has(coarseKey)) {
+      return null;
+    }
+
     // 1. Check offline GeoTIFF data first (highest priority)
     try {
       const offlineElev = await lidarGeoTiffService.getElevation(lat, lng);
-      if (offlineElev !== null) return offlineElev;
+      if (offlineElev !== null) {
+        elevationCache.current.set(preciseKey, offlineElev);
+        return offlineElev;
+      }
     } catch (e) {
       console.error('[LiDAR] Failed to read elevation from GeoTIFF in report', e);
     }
 
-    // 2. Fallback to Online API
+    // If the coordinates lie inside some downloaded GeoTIFF's bounding box,
+    // and the high-priority offline check above was null (meaning NoData/gap inside the tile),
+    // then the online system will also haveNoData-gap. Do not hit the online WMS API.
+    if (lidarGeoTiffService.isAreaDownloaded(lat, lng)) {
+      elevationCache.current.set(preciseKey, null);
+      deadZoneCache.current.add(coarseKey);
+      return null;
+    }
+
+    // 2. Fallback to Online API with a strict 3-second timeout protection
     try {
-      const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`);
-      if (!response.ok) return null;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+      const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        elevationCache.current.set(preciseKey, null);
+        deadZoneCache.current.add(coarseKey);
+        return null;
+      }
       const data = await response.json();
       
+      let elevation: number | null = null;
       // Handle new JNCC WCS format
       if (data && data.elevation !== undefined) {
         const val = parseFloat(String(data.elevation).trim());
-        if (!isNaN(val)) return val;
+        if (!isNaN(val)) elevation = val;
       }
       
       // Fallback for old ArcGIS format
-      if (data && data.results && data.results.length > 0) {
+      if (elevation === null && data && data.results && data.results.length > 0) {
         const res = data.results[0];
         const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
-        if (!isNaN(val)) return val;
+        if (!isNaN(val)) elevation = val;
       }
-      return null;
+
+      elevationCache.current.set(preciseKey, elevation);
+      if (elevation === null) {
+        deadZoneCache.current.add(coarseKey);
+      }
+      return elevation;
     } catch (e) {
+      elevationCache.current.set(preciseKey, null);
+      deadZoneCache.current.add(coarseKey);
       return null;
     }
   };

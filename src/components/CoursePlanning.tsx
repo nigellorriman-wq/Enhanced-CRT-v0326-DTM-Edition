@@ -20,6 +20,8 @@ interface CourseContactInfo {
   website: string;
   phone: string;
   full_address: string;
+  postcode: string;
+  verified_match: boolean;
 }
 
 interface CoursePlanningProps {
@@ -45,11 +47,20 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
   }, [selectedCourse]);
 
   const fetchContactInfo = async (course: typeof golfCourses[0]) => {
+    const coords = osgbToWgs84(course.easting, course.northing);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Find the official contact information for the golf course: ${course.site_name} in ${course.town}, Scotland. Return ONLY a JSON object with keys: website (full URL), phone (formatted with UK code), and full_address. Ensure it is the correct club and not a generic business nearby.`,
+        contents: `Find the official contact information for the golf course: "${course.site_name}" located in "${course.town}", Scotland (Approx. Coords: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}).
+
+        STRICT LOCATION VERIFICATION:
+        1. Identify the exact club at the provided town and coordinates.
+        2. BEWARE: Avoid confusion with similarly named clubs (e.g., "Musselburgh Golf Club" vs "Royal Musselburgh Golf Club").
+        3. Verify the found course's postcode area matches the expected area for ${course.town}.
+        4. If the closest match is in a different town or has a different postcode area than expected for ${course.town}, do not confirm the match.
+
+        Return ONLY a JSON object with: website (full URL), phone, full_address, postcode, and verified_match (boolean).`,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -57,9 +68,11 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
             properties: {
               website: { type: Type.STRING },
               phone: { type: Type.STRING },
-              full_address: { type: Type.STRING }
+              full_address: { type: Type.STRING },
+              postcode: { type: Type.STRING },
+              verified_match: { type: Type.BOOLEAN }
             },
-            required: ["website", "phone", "full_address"]
+            required: ["website", "phone", "full_address", "postcode", "verified_match"]
           },
           tools: [{ googleSearch: {} }],
           toolConfig: { includeServerSideToolInvocations: true }
@@ -67,7 +80,8 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       });
 
       if (response.text) {
-        return JSON.parse(response.text.trim()) as CourseContactInfo;
+        const data = JSON.parse(response.text.trim()) as CourseContactInfo;
+        return data.verified_match ? data : null;
       }
     } catch (error) {
       console.error('Failed to fetch course contact info:', error);
