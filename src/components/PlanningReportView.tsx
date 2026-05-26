@@ -32,10 +32,10 @@ interface PlanningReportViewProps {
 interface ProfilePoint {
   distance: number;
   distanceMetres: number;
-  elevationDiff: number;
-  elevationDiffMetres: number;
-  absoluteAltitude: number;
-  absoluteAltitudeMetres: number;
+  elevationDiff: number | null;
+  elevationDiffMetres: number | null;
+  absoluteAltitude: number | null;
+  absoluteAltitudeMetres: number | null;
   isPivot?: boolean;
 }
 
@@ -59,15 +59,20 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
 
     Object.values(profiles).forEach(profile => {
       [...profile.scratch, ...profile.bogey].forEach(p => {
-        if (p.absoluteAltitude < minFeet) minFeet = p.absoluteAltitude;
-        if (p.absoluteAltitude > maxFeet) maxFeet = p.absoluteAltitude;
-        if (p.absoluteAltitudeMetres < minMetres) minMetres = p.absoluteAltitudeMetres;
-        if (p.absoluteAltitudeMetres > maxMetres) maxMetres = p.absoluteAltitudeMetres;
-        hasData = true;
+        if (p.absoluteAltitude !== null && p.absoluteAltitude !== undefined) {
+          if (p.absoluteAltitude < minFeet) minFeet = p.absoluteAltitude;
+          if (p.absoluteAltitude > maxFeet) maxFeet = p.absoluteAltitude;
+          hasData = true;
+        }
+        if (p.absoluteAltitudeMetres !== null && p.absoluteAltitudeMetres !== undefined) {
+          if (p.absoluteAltitudeMetres < minMetres) minMetres = p.absoluteAltitudeMetres;
+          if (p.absoluteAltitudeMetres > maxMetres) maxMetres = p.absoluteAltitudeMetres;
+          hasData = true;
+        }
       });
     });
 
-    return hasData ? { minFeet, maxFeet, minMetres, maxMetres } : null;
+    return hasData && minFeet !== Infinity ? { minFeet, maxFeet, minMetres, maxMetres } : null;
   }, [profiles]);
 
   const profilesRef = useRef(profiles);
@@ -297,21 +302,24 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           const stepDistMetres = totalDistMetres + (segmentDist * t);
           
           const alt = await fetchLidar(lat, lng);
+          let currentAlt: number | null = null;
           if (alt !== null) {
+            currentAlt = alt;
             lastKnownAlt = alt;
           } else if (step === 0 && p1.alt) {
+            currentAlt = p1.alt;
             lastKnownAlt = p1.alt;
+          } else {
+            currentAlt = null;
           }
-          
-          const currentAlt = lastKnownAlt;
 
           result.push({
             distance: stepDistMetres * 1.09361, // Yards for X-axis display
             distanceMetres: stepDistMetres,
-            elevationDiff: (currentAlt - baselineAlt) * 3.28084, // Feet
-            elevationDiffMetres: currentAlt - baselineAlt,
-            absoluteAltitude: currentAlt * 3.28084, // Feet
-            absoluteAltitudeMetres: currentAlt,
+            elevationDiff: currentAlt !== null ? (currentAlt - baselineAlt) * 3.28084 : null, // Feet
+            elevationDiffMetres: currentAlt !== null ? currentAlt - baselineAlt : null,
+            absoluteAltitude: currentAlt !== null ? currentAlt * 3.28084 : null, // Feet
+            absoluteAltitudeMetres: currentAlt !== null ? currentAlt : null,
             isPivot: step === 0 || (i === anchors.length - 2 && step === numSteps)
           });
         }
@@ -384,20 +392,25 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     const yUnit = isImperial ? 'Feet' : 'Metres';
 
     // Calculate synchronized domains for both Y-axes to ensure visual alignment
-    const yLeftValues = data.map(p => p[yLeftKey as keyof ProfilePoint] as number);
-    const minLeft = Math.min(...yLeftValues);
-    const maxLeft = Math.max(...yLeftValues);
+    const yLeftValues = data
+      .map(p => p[yLeftKey as keyof ProfilePoint] as number | null)
+      .filter((v): v is number => v !== null && v !== undefined);
+    const minLeft = yLeftValues.length > 0 ? Math.min(...yLeftValues) : 0;
+    const maxLeft = yLeftValues.length > 0 ? Math.max(...yLeftValues) : 10;
     const diff = maxLeft - minLeft;
     const padding = diff === 0 ? 10 : diff * 0.15;
     const leftDomain = [minLeft - padding, maxLeft + padding];
     
     // The right axis (Absolute Altitude) must be offset by the starting altitude
-    const startAlt = data[0][yRightKey as keyof ProfilePoint] as number;
+    const startAlt = (data.find(p => p[yRightKey as keyof ProfilePoint] !== null)?.[yRightKey as keyof ProfilePoint] as number) || 0;
     const rightDomain = [leftDomain[0] + startAlt, leftDomain[1] + startAlt];
 
     const lastPoint = data[data.length - 1];
     const holeLength = isImperial ? lastPoint.distance : lastPoint.distanceMetres;
-    const elevDiff = isImperial ? lastPoint.elevationDiff : lastPoint.elevationDiffMetres;
+    
+    // Get the last valid point with elevation data for elevation adjustment calculations
+    const lastValidLeftPoint = [...data].reverse().find(p => p[yLeftKey as keyof ProfilePoint] !== null);
+    const elevDiff = lastValidLeftPoint ? (lastValidLeftPoint[yLeftKey as keyof ProfilePoint] as number) : 0;
     
     // Course Rating System Manual adjustment for EPL [Elevation]
     // 1. Determine if it's a short hole for max adjustment constraint
@@ -439,11 +452,13 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     const lengthLabel = `${holeLength.toFixed(0)}${xUnit === 'Yards' ? 'y' : 'm'}`;
     const eplLabel = `${epl.toFixed(0)}${xUnit === 'Yards' ? 'y' : 'm'}`;
 
-    const yRightValues = data.map(p => p[yRightKey as keyof ProfilePoint] as number);
-    const minAbs = Math.min(...yRightValues);
-    const maxAbs = Math.max(...yRightValues);
-    const teeAbs = data[0][yRightKey as keyof ProfilePoint] as number;
-    const greenAbs = data[data.length - 1][yRightKey as keyof ProfilePoint] as number;
+    const yRightValues = data
+      .map(p => p[yRightKey as keyof ProfilePoint] as number | null)
+      .filter((v): v is number => v !== null && v !== undefined);
+    const minAbs = yRightValues.length > 0 ? Math.min(...yRightValues) : 0;
+    const maxAbs = yRightValues.length > 0 ? Math.max(...yRightValues) : 0;
+    const teeAbs = (data.find(p => p[yRightKey as keyof ProfilePoint] !== null)?.[yRightKey as keyof ProfilePoint] as number) || 0;
+    const greenAbs = ([...data].reverse().find(p => p[yRightKey as keyof ProfilePoint] !== null)?.[yRightKey as keyof ProfilePoint] as number) || 0;
     const unitSfx = isImperial ? 'ft' : 'm';
 
     return (
@@ -504,8 +519,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                     return (
                       <div className="bg-white border border-slate-200 p-3 shadow-xl rounded-lg text-[10px]">
                         <p className="font-bold text-slate-800 mb-1 border-b pb-1">Distance: {d.distance.toFixed(1)}y / {d.distanceMetres.toFixed(1)}m</p>
-                        <p className="text-blue-600 font-medium">Elev Diff: {d.elevationDiff.toFixed(1)}ft / {d.elevationDiffMetres.toFixed(1)}m</p>
-                        <p className="text-slate-500 font-medium">Altitude: {d.absoluteAltitude.toFixed(1)}ft / {d.absoluteAltitudeMetres.toFixed(1)}m</p>
+                        <p className="text-blue-600 font-medium">
+                          Elev Diff: {d.elevationDiff !== null && d.elevationDiff !== undefined ? `${d.elevationDiff.toFixed(1)}ft` : 'N/A'} / {d.elevationDiffMetres !== null && d.elevationDiffMetres !== undefined ? `${d.elevationDiffMetres.toFixed(1)}m` : 'N/A'}
+                        </p>
+                        <p className="text-slate-500 font-medium">
+                          Altitude: {d.absoluteAltitude !== null && d.absoluteAltitude !== undefined ? `${d.absoluteAltitude.toFixed(1)}ft` : 'N/A'} / {d.absoluteAltitudeMetres !== null && d.absoluteAltitudeMetres !== undefined ? `${d.absoluteAltitudeMetres.toFixed(1)}m` : 'N/A'}
+                        </p>
                       </div>
                     );
                   }
@@ -532,6 +551,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 fillOpacity={0.1} 
                 strokeWidth={2}
                 dot={false}
+                connectNulls={false}
               />
               
               <Line
@@ -541,6 +561,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 stroke="none"
                 dot={false}
                 activeDot={false}
+                connectNulls={false}
               />
             </ComposedChart>
           </ResponsiveContainer>
@@ -570,7 +591,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                   if (i === 0) return null; // Skip the "Start" point
                   const prev = pivots[i-1];
                   const legDist = isImperial ? (p.distance - prev.distance) : (p.distanceMetres - prev.distanceMetres);
-                  const legElev = isImperial ? (p.elevationDiff - prev.elevationDiff) : (p.elevationDiffMetres - prev.elevationDiffMetres);
+                  const hasElev = p.elevationDiff !== null && prev.elevationDiff !== null;
+                  const legElev = hasElev ? (isImperial ? (p.elevationDiff! - prev.elevationDiff!) : (p.elevationDiffMetres! - prev.elevationDiffMetres!)) : null;
                   const totalElev = isImperial ? p.elevationDiff : p.elevationDiffMetres;
                   const label = i === pivots.length - 1 ? "End" : `Pivot ${i}`;
 
@@ -578,8 +600,12 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                     <tr key={i} className="border-b border-slate-200">
                       <td className="py-1 font-bold text-slate-950">{label}</td>
                       <td className="py-1 text-right font-medium text-slate-950">{legDist.toFixed(1)}</td>
-                      <td className="py-1 text-right font-medium text-slate-950">{(legElev >= 0 ? '+' : '') + legElev.toFixed(1)}</td>
-                      <td className="py-1 text-right font-bold text-blue-700">{(totalElev >= 0 ? '+' : '') + totalElev.toFixed(1)}</td>
+                      <td className="py-1 text-right font-medium text-slate-950">
+                        {legElev !== null ? (legElev >= 0 ? '+' : '') + legElev.toFixed(1) : 'N/A'}
+                      </td>
+                      <td className="py-1 text-right font-bold text-blue-700">
+                        {totalElev !== null ? (totalElev >= 0 ? '+' : '') + totalElev.toFixed(1) : 'N/A'}
+                      </td>
                     </tr>
                   );
                 });
