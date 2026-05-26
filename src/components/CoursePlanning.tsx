@@ -225,7 +225,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       >;
       out skel qt;`;
 
-      const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+      const response = await fetch(`/api/overpass?data=${encodeURIComponent(query)}`);
       if (!response.ok) {
         throw new Error(`Failed to contact OSM Overpass API. Status: ${response.status}`);
       }

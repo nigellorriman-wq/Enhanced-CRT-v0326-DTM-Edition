@@ -484,6 +484,32 @@ async function startServer() {
     }
   });
 
+  // Proxy for OSM Overpass API to bypass CORS
+  app.get("/api/overpass", async (req, res) => {
+    const { data } = req.query;
+    if (!data || typeof data !== 'string') {
+      return res.status(400).json({ error: 'Missing data query parameter' });
+    }
+    
+    console.log(`[Proxy Overpass API] Querying Overpass API`);
+    try {
+      const response = await axios.get("https://overpass-api.de/api/interpreter", {
+        params: { data },
+        timeout: 45000,
+        headers: {
+          'Accept': 'application/json, */*'
+        }
+      });
+      res.json(response.data);
+    } catch (error: any) {
+      console.error(`[Proxy Overpass API] Error querying Overpass:`, error.message);
+      res.status(error.response?.status || 500).json({
+        error: 'Failed to fetch from Overpass API',
+        details: error.message
+      });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
