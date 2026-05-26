@@ -2364,6 +2364,21 @@ const CourseBrowser: React.FC<{
   );
 };
 
+interface KmlPoint {
+  lat: number;
+  lng: number;
+  alt: number;
+}
+
+interface KmlTrack {
+  name: string;
+  type: 'Track' | 'Green' | 'Point';
+  points: KmlPoint[];
+  lidarPoints?: { lat: number; lng: number; elevation: number | null }[];
+  coveragePercent?: number;
+  holeNumber?: number;
+}
+
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>('landing');
   const [units, setUnits] = useState<UnitSystem>('Yards');
@@ -2404,6 +2419,8 @@ const App: React.FC = () => {
   const [activeCoverageId, setActiveCoverageId] = useState<string | null>(null);
   const [planningPivots, setPlanningPivots] = useState<PivotRecord[]>([]);
   const [selectedCourseForPlanning, setSelectedCourseForPlanning] = useState<typeof golfCourses[0] | null>(null);
+  const [planningKmlTracks, setPlanningKmlTracks] = useState<KmlTrack[]>([]);
+  const [showPlanningKml, setShowPlanningKml] = useState<boolean>(true);
 
   React.useEffect(() => {
     if (mapStyle === 'LiDAR DTM') {
@@ -3511,14 +3528,15 @@ const App: React.FC = () => {
       ) : view === 'planning' ? (
         <CoursePlanning 
           initialCourse={selectedCourseForPlanning}
-          onClose={() => { setIsPlanningSession(false); setView('landing'); setSelectedCourseForPlanning(null); }} 
-          onSelect={async (lat, lng, name) => {
+          onClose={() => { setIsPlanningSession(false); setView('landing'); setSelectedCourseForPlanning(null); setPlanningKmlTracks([]); }} 
+          onSelect={async (lat, lng, name, kmlTracks) => {
             setIsPlanningSession(true);
             setIsFollowing(true);
             setMapLockKey(k => k + 1);
             setMapStyle('LiDAR DTM');
             setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
             setPos({ lat, lng, accuracy: 0.5, timestamp: Date.now(), alt: null, altAccuracy: null, source: 'Manual' });
+            setPlanningKmlTracks(kmlTracks || []);
             
             // Clear unsaved GeoTIFFs when switching courses
             await lidarGeoTiffService.clearUnsaved();
@@ -3533,7 +3551,7 @@ const App: React.FC = () => {
         <div className="flex-1 flex flex-col relative animate-in slide-in-from-right duration-300">
           <div className="absolute top-0 left-0 right-0 z-[1000] p-4 flex justify-between pointer-events-none">
           <button onClick={() => { 
-            setView('landing'); setTrkActive(false); setMapActive(false); setViewingRecord(null); setShowPivotMenu(false); setTrkPoints([]); setCurrentPivots([]); 
+            setView('landing'); setTrkActive(false); setMapActive(false); setViewingRecord(null); setShowPivotMenu(false); setTrkPoints([]); setCurrentPivots([]); setPlanningKmlTracks([]);
               }} 
               className="pointer-events-auto bg-slate-800 border border-white/20 w-[46px] h-[46px] rounded-full flex items-center justify-center shadow-2xl active:scale-95 transition-all"
               title="Home"
@@ -3554,6 +3572,15 @@ const App: React.FC = () => {
               {view === 'track' && (
                 <button onClick={() => setViewingTrackProfile(p => p === 'Rater\'s Walk' ? 'Scratch' : 'Rater\'s Walk')} className="bg-slate-800 border border-white/20 rounded-full shadow-2xl active:scale-90 flex items-center justify-center w-[46px] h-[46px]">
                   {viewingTrackProfile === 'Rater\'s Walk' ? <Route size={20} className="text-rose-500" /> : <Waypoints size={20} className="text-emerald-400" />}
+                </button>
+              )}
+              {planningKmlTracks.length > 0 && (
+                <button 
+                  onClick={() => setShowPlanningKml(v => !v)} 
+                  className={`bg-slate-800 border border-white/20 p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${showPlanningKml ? 'text-emerald-400' : 'text-slate-500'}`}
+                  title={showPlanningKml ? "Hide KML Layer" : "Show KML Layer"}
+                >
+                  <Eye size={20} />
                 </button>
               )}
               <button 
@@ -3693,6 +3720,112 @@ const App: React.FC = () => {
                     />
                   </React.Fragment>
                 ))}
+                {showPlanningKml && planningKmlTracks.map((feat, fIdx) => {
+                  const positions = feat.points.map((p: any) => [p.lat, p.lng] as [number, number]);
+                  if (positions.length === 0) return null;
+
+                  const holeNumToDisplay = feat.holeNumber || (() => {
+                    const match = feat.name.match(/Hole\s*(\d+)/i) || feat.name.match(/#\s*(\d+)/);
+                    return match ? parseInt(match[1], 10) : undefined;
+                  })();
+
+                  if (feat.type === 'Green') {
+                    // Compute polygon center
+                    let sumLat = 0, sumLng = 0;
+                    positions.forEach(p => {
+                      sumLat += p[0];
+                      sumLng += p[1];
+                    });
+                    const center: [number, number] = [sumLat / positions.length, sumLng / positions.length];
+
+                    return (
+                      <React.Fragment key={`planning-kml-green-group-${fIdx}`}>
+                        <Polygon 
+                          positions={positions} 
+                          pathOptions={{
+                            fillColor: '#10b981', 
+                            fillOpacity: 0.25, 
+                            weight: 2, 
+                            color: '#34d399'
+                          }}
+                        >
+                          <Tooltip sticky><span className="text-xs font-bold">{feat.name}</span></Tooltip>
+                        </Polygon>
+                        <Marker 
+                          position={center} 
+                          icon={L.divIcon({
+                            className: '',
+                            html: `<div class="w-6 h-6 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center shadow-lg text-white font-black text-xs" title="${feat.name}">${holeNumToDisplay || ''}</div>`,
+                            iconSize: [24, 24],
+                            iconAnchor: [12, 12]
+                          })}
+                        >
+                          <Tooltip sticky><span className="text-xs font-bold">{feat.name} Green</span></Tooltip>
+                        </Marker>
+                      </React.Fragment>
+                    );
+                  } else if (positions.length > 1) {
+                    const teePt = positions[0];
+                    const greenPt = positions[positions.length - 1];
+
+                    return (
+                      <React.Fragment key={`planning-kml-track-group-${fIdx}`}>
+                        <Polyline 
+                          positions={positions} 
+                          pathOptions={{
+                            color: '#60a5fa', 
+                            weight: 4,
+                            dashArray: feat.type === 'Point' ? '5, 5' : undefined
+                          }} 
+                        >
+                          <Tooltip sticky><span className="text-xs font-bold">{feat.name}</span></Tooltip>
+                        </Polyline>
+
+                        {/* Tee: Small Square */}
+                        <Marker 
+                          position={teePt}
+                          icon={L.divIcon({
+                            className: '',
+                            html: `<div class="w-3.5 h-3.5 bg-amber-400 border-2 border-slate-950 shadow-md" style="border-radius: 2px;" title="${feat.name} Tee"></div>`,
+                            iconSize: [14, 14],
+                            iconAnchor: [7, 7]
+                          })}
+                        >
+                          <Tooltip sticky><span className="text-xs font-bold">{feat.name} Tee</span></Tooltip>
+                        </Marker>
+
+                        {/* Green: Circle with Hole Number inside */}
+                        <Marker 
+                          position={greenPt}
+                          icon={L.divIcon({
+                            className: '',
+                            html: `<div class="w-6 h-6 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center shadow-lg text-white font-black text-xs" title="${feat.name} Green">${holeNumToDisplay || ''}</div>`,
+                            iconSize: [24, 24],
+                            iconAnchor: [12, 12]
+                          })}
+                        >
+                          <Tooltip sticky><span className="text-xs font-bold">{feat.name} Green</span></Tooltip>
+                        </Marker>
+                      </React.Fragment>
+                    );
+                  } else if (positions.length === 1) {
+                    return (
+                      <Marker 
+                        key={`planning-kml-pt-${fIdx}`} 
+                        position={positions[0]} 
+                        icon={L.divIcon({
+                          className: '',
+                          html: `<div class="w-3 h-3 bg-blue-500 rounded-full border-2 border-white shadow-lg flex items-center justify-center" title="${feat.name}"></div>`,
+                          iconSize: [12, 12],
+                          iconAnchor: [6, 6]
+                        })}
+                      >
+                        <Tooltip sticky><span className="text-xs font-bold">{feat.name}</span></Tooltip>
+                      </Marker>
+                    );
+                  }
+                  return null;
+                })}
                 <MapController 
                   key={mapLockKey}
                   pos={pos} 

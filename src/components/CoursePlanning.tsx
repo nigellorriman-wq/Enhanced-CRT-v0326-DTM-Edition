@@ -36,10 +36,11 @@ interface KmlTrack {
   points: KmlPoint[];
   lidarPoints?: { lat: number; lng: number; elevation: number | null }[];
   coveragePercent?: number;
+  holeNumber?: number;
 }
 
 interface CoursePlanningProps {
-  onSelect: (lat: number, lng: number, name: string) => void;
+  onSelect: (lat: number, lng: number, name: string, kmlTracks?: KmlTrack[]) => void;
   onClose: () => void;
   initialCourse?: typeof golfCourses[0] | null;
 }
@@ -96,10 +97,30 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         const isGreen = !!p.getElementsByTagName("Polygon")[0] || descStr.includes("Type: Green") || nameStr.toLowerCase().includes("green");
         const isPoint = !!p.getElementsByTagName("Point")[0] && rawPoints.length === 1;
 
+        let holeNumber: number | undefined;
+        const fromDesc = descStr.match(/Hole\s*:\s*(\d+)/i) || descStr.match(/Hole\s*(\d+)/i);
+        if (fromDesc) {
+          const num = parseInt(fromDesc[1], 10);
+          if (!isNaN(num)) holeNumber = num;
+        } else {
+          const fromName = nameStr.match(/Hole\s*(\d+)/i) || nameStr.match(/#\s*(\d+)/) || nameStr.match(/Hole\s*:\s*(\d+)/i);
+          if (fromName) {
+            const num = parseInt(fromName[1], 10);
+            if (!isNaN(num)) holeNumber = num;
+          } else {
+            const loneNum = nameStr.match(/\b(\d+)\b/);
+            if (loneNum) {
+              const num = parseInt(loneNum[1], 10);
+              if (!isNaN(num) && num > 0 && num <= 18) holeNumber = num;
+            }
+          }
+        }
+
         tracks.push({
           name: nameStr,
           type: isGreen ? 'Green' : isPoint ? 'Point' : 'Track',
           points: rawPoints,
+          holeNumber,
         });
       }
 
@@ -589,6 +610,21 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                       </div>
                     </div>
                   )}
+
+                  {lidarCoverageChecked && importedKmlTracks.length > 0 && (
+                    <button
+                      onClick={() => {
+                        const firstPt = importedKmlTracks[0]?.points?.[0];
+                        if (firstPt) {
+                          onSelect(firstPt.lat, firstPt.lng, importedKmlFileName.replace(/\.[^/.]+$/, ""), importedKmlTracks);
+                        }
+                      }}
+                      className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3 px-4 rounded-xl shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-2 uppercase tracking-wider text-xs mb-4"
+                    >
+                      <Navigation2 size={14} className="fill-current" />
+                      <span>Go to course</span>
+                    </button>
+                  )}
                 </div>
 
                 <div className="text-[10px] text-slate-500 italic max-w-sm">
@@ -613,10 +649,10 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                         <Polygon 
                           key={fIdx} 
                           positions={positions} 
-                          fillColor={generalCoveragePercent > 0 ? '#10b981' : '#f43f5e'} 
+                          fillColor="#10b981" 
                           fillOpacity={0.4} 
                           weight={2} 
-                          color={generalCoveragePercent > 0 ? '#34d399' : '#f43f5e'} 
+                          color="#34d399" 
                         />
                       );
                     } else if (positions.length > 1) {
@@ -624,7 +660,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                         <Polyline 
                           key={fIdx} 
                           positions={positions} 
-                          color={generalCoveragePercent > 0 ? '#60a5fa' : '#ef4444'} 
+                          color="#60a5fa" 
                           weight={3} 
                         />
                       );
