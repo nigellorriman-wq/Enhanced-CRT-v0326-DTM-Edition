@@ -37,6 +37,7 @@ interface KmlTrack {
   lidarPoints?: { lat: number; lng: number; elevation: number | null }[];
   coveragePercent?: number;
   holeNumber?: number;
+  playerType?: 'Scratch' | 'Bogey' | 'Main';
 }
 
 interface CoursePlanningProps {
@@ -116,11 +117,21 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
           }
         }
 
+        let playerType: 'Scratch' | 'Bogey' | 'Main' = 'Main';
+        const nameL = nameStr.toLowerCase();
+        const descL = descStr.toLowerCase();
+        if (nameL.includes('scratch') || descL.includes('scratch')) {
+          playerType = 'Scratch';
+        } else if (nameL.includes('bogey') || nameL.includes('bogoy') || descL.includes('bogey') || descL.includes('bogoy')) {
+          playerType = 'Bogey';
+        }
+
         tracks.push({
           name: nameStr,
           type: isGreen ? 'Green' : isPoint ? 'Point' : 'Track',
           points: rawPoints,
           holeNumber,
+          playerType,
         });
       }
 

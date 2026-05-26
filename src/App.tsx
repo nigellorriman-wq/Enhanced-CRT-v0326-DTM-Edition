@@ -2377,6 +2377,7 @@ interface KmlTrack {
   lidarPoints?: { lat: number; lng: number; elevation: number | null }[];
   coveragePercent?: number;
   holeNumber?: number;
+  playerType?: 'Scratch' | 'Bogey' | 'Main';
 }
 
 const App: React.FC = () => {
@@ -3563,15 +3564,29 @@ const App: React.FC = () => {
                 <div className="bg-slate-800 border border-white/20 w-[46px] h-[46px] rounded-full flex items-center justify-center shadow-2xl"><span className="text-xl font-bold text-blue-400 tabular-nums">{holeNum}</span></div>
               )}
               {view === 'track' && (
-                <button onClick={() => setOvalMode(m => m === 'off' ? 'scratch' : m === 'scratch' ? 'bogey' : 'off')} className="bg-slate-800 border border-white/20 rounded-full shadow-2xl active:scale-90 flex items-center justify-center w-[46px] h-[46px]">
+                <button 
+                  onClick={() => setOvalMode(m => m === 'off' ? 'scratch' : m === 'scratch' ? 'bogey' : 'off')} 
+                  className="bg-slate-800 border border-white/20 rounded-full shadow-2xl active:scale-90 flex items-center justify-center w-[46px] h-[46px]"
+                  title="Toggle Accuracy Oval (S/B/Off)"
+                >
                   {ovalMode === 'off' && <CircleOff size={20} className="text-white" />}
                   {ovalMode === 'scratch' && <span className="text-emerald-400 font-bold text-2xl flex items-center justify-center leading-none">S</span>}
                   {ovalMode === 'bogey' && <span className="text-yellow-400 font-bold text-2xl flex items-center justify-center leading-none">B</span>}
                 </button>
               )}
               {view === 'track' && (
-                <button onClick={() => setViewingTrackProfile(p => p === 'Rater\'s Walk' ? 'Scratch' : 'Rater\'s Walk')} className="bg-slate-800 border border-white/20 rounded-full shadow-2xl active:scale-90 flex items-center justify-center w-[46px] h-[46px]">
-                  {viewingTrackProfile === 'Rater\'s Walk' ? <Route size={20} className="text-rose-500" /> : <Waypoints size={20} className="text-emerald-400" />}
+                <button 
+                  onClick={() => setViewingTrackProfile(p => {
+                    if (p === 'Rater\'s Walk') return 'Scratch';
+                    if (p === 'Scratch') return 'Bogey';
+                    return 'Rater\'s Walk';
+                  })} 
+                  className="bg-slate-800 border border-white/20 rounded-full shadow-2xl active:scale-90 flex items-center justify-center w-[46px] h-[46px]"
+                  title="Toggle Display Path (Main / Scratch / Bogey)"
+                >
+                  {viewingTrackProfile === 'Rater\'s Walk' && <Route size={20} className="text-rose-500" />}
+                  {viewingTrackProfile === 'Scratch' && <span className="text-emerald-400 font-bold text-lg flex items-center justify-center leading-none">S</span>}
+                  {viewingTrackProfile === 'Bogey' && <span className="text-yellow-400 font-bold text-lg flex items-center justify-center leading-none">B</span>}
                 </button>
               )}
               {planningKmlTracks.length > 0 && (
@@ -3590,9 +3605,27 @@ const App: React.FC = () => {
               > 
                 <Crosshair size={20} className={isFollowing && !isPlanningSession ? 'animate-pulse' : ''} />
               </button>
-              <button onClick={() => setUnits(u => u === 'Yards' ? 'Metres' : 'Yards')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-emerald-400 shadow-2xl active:scale-90"><Ruler size={20} /></button>
-              <button onClick={() => setShowTerrainManager(true)} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-amber-400 shadow-2xl active:scale-90"><Mountain size={20} /></button>
-              <button onClick={() => setMapStyle(s => s === 'Street' ? 'Satellite' : s === 'Satellite' ? 'LiDAR DTM' : 'Street')} className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-blue-400 shadow-2xl active:scale-90"><Layers size={20} /></button>
+              <button 
+                onClick={() => setUnits(u => u === 'Yards' ? 'Metres' : 'Yards')} 
+                className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-emerald-400 shadow-2xl active:scale-90"
+                title="Toggle Measurement Units (Yards / Metres)"
+              >
+                <Ruler size={20} />
+              </button>
+              <button 
+                onClick={() => setShowTerrainManager(true)} 
+                className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-amber-400 shadow-2xl active:scale-90"
+                title="Terrain & DSM Manager"
+              >
+                <Mountain size={20} />
+              </button>
+              <button 
+                onClick={() => setMapStyle(s => s === 'Street' ? 'Satellite' : s === 'Satellite' ? 'LiDAR DTM' : 'Street')} 
+                className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-blue-400 shadow-2xl active:scale-90"
+                title="Change Map Style (Street / Satellite / LiDAR)"
+              >
+                <Layers size={20} />
+              </button>
             </div>
           </div>
           <main className="flex-1 relative">
@@ -3720,7 +3753,26 @@ const App: React.FC = () => {
                     />
                   </React.Fragment>
                 ))}
-                {showPlanningKml && planningKmlTracks.map((feat, fIdx) => {
+                {showPlanningKml && planningKmlTracks.filter(feat => {
+                  if (feat.type === 'Green' || feat.type === 'Point') return true;
+
+                  const hasScratchBogeyInKml = planningKmlTracks.some(t => t.playerType === 'Scratch') && planningKmlTracks.some(t => t.playerType === 'Bogey');
+                  if (hasScratchBogeyInKml && feat.playerType) {
+                    if (viewingTrackProfile === 'Scratch') {
+                      return feat.playerType === 'Scratch';
+                    }
+                    if (viewingTrackProfile === 'Bogey') {
+                      return feat.playerType === 'Bogey';
+                    }
+                    if (ovalMode === 'scratch') {
+                      return feat.playerType === 'Scratch';
+                    }
+                    if (ovalMode === 'bogey') {
+                      return feat.playerType === 'Bogey';
+                    }
+                  }
+                  return true;
+                }).map((feat, fIdx) => {
                   const positions = feat.points.map((p: any) => [p.lat, p.lng] as [number, number]);
                   if (positions.length === 0) return null;
 
@@ -3773,7 +3825,7 @@ const App: React.FC = () => {
                         <Polyline 
                           positions={positions} 
                           pathOptions={{
-                            color: '#60a5fa', 
+                            color: feat.playerType === 'Scratch' ? '#10b981' : feat.playerType === 'Bogey' ? '#facc15' : '#60a5fa', 
                             weight: 4,
                             dashArray: feat.type === 'Point' ? '5, 5' : undefined
                           }} 
@@ -3786,7 +3838,7 @@ const App: React.FC = () => {
                           position={teePt}
                           icon={L.divIcon({
                             className: '',
-                            html: `<div class="w-3.5 h-3.5 bg-amber-400 border-2 border-slate-950 shadow-md" style="border-radius: 2px;" title="${feat.name} Tee"></div>`,
+                            html: `<div class="w-3.5 h-3.5 ${feat.playerType === 'Scratch' ? 'bg-emerald-400' : feat.playerType === 'Bogey' ? 'bg-yellow-400' : 'bg-amber-400'} border-2 border-slate-950 shadow-md" style="border-radius: 2px;" title="${feat.name} Tee"></div>`,
                             iconSize: [14, 14],
                             iconAnchor: [7, 7]
                           })}
