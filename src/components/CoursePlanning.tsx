@@ -38,6 +38,8 @@ interface KmlTrack {
   coveragePercent?: number;
   holeNumber?: number;
   playerType?: 'Scratch' | 'Bogey' | 'Main';
+  osmTags?: Record<string, string>;
+  golfValue?: string;
 }
 
 interface CoursePlanningProps {
@@ -62,6 +64,9 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
   const [isVerifyingLidar, setIsVerifyingLidar] = useState<boolean>(false);
   const [lidarCoverageChecked, setLidarCoverageChecked] = useState<boolean>(false);
   const [generalCoveragePercent, setGeneralCoveragePercent] = useState<number>(0);
+
+  const [loadingOsm, setLoadingOsm] = useState<boolean>(false);
+  const [osmError, setOsmError] = useState<string | null>(null);
 
   const handleKmlUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -187,6 +192,221 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       }
     };
     reader.readAsText(file);
+  };
+
+  const handleQueryOsm = async () => {
+    if (!selectedCourse) return;
+    const coords = osgbToWgs84(selectedCourse.easting, selectedCourse.northing);
+    setLoadingOsm(true);
+    setOsmError(null);
+    setLidarCoverageChecked(false);
+    setGeneralCoveragePercent(0);
+
+    try {
+      // Overpass QL query for golf elements within 2000m of the selected course
+      const query = `[out:json][timeout:30];
+      (
+        node["golf"](around:2000, ${coords.lat}, ${coords.lng});
+        way["golf"](around:2000, ${coords.lat}, ${coords.lng});
+        relation["golf"](around:2000, ${coords.lat}, ${coords.lng});
+        way["leisure"="golf_course"](around:2000, ${coords.lat}, ${coords.lng});
+      );
+      out body;
+      >;
+      out skel qt;`;
+
+      const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+      if (!response.ok) {
+        throw new Error(`Failed to contact OSM Overpass API. Status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (!data || !data.elements || data.elements.length === 0) {
+        throw new Error("No golf features found within 2000m on OpenStreetMap.");
+      }
+
+      const nodesMap = new Map<number, { lat: number, lng: number }>();
+      const ways: any[] = [];
+
+      for (const elem of data.elements) {
+        if (elem.type === 'node') {
+          nodesMap.set(elem.id, { lat: elem.lat, lng: elem.lon });
+        } else if (elem.type === 'way') {
+          ways.push(elem);
+        }
+      }
+
+      const tracks: KmlTrack[] = [];
+
+      for (const way of ways) {
+        if (!way.nodes || way.nodes.length === 0) continue;
+        const pts: KmlPoint[] = way.nodes
+          .map((nid: number) => {
+            const coord = nodesMap.get(nid);
+            if (!coord) return null;
+            return { lat: coord.lat, lng: coord.lng, alt: 0 };
+          })
+          .filter((pt: any): pt is KmlPoint => pt !== null);
+
+        if (pts.length === 0) continue;
+
+        const tags = way.tags || {};
+        const golfVal = tags.golf || '';
+        const leisureVal = tags.leisure || '';
+        
+        let type: 'Track' | 'Green' | 'Point' = 'Track';
+        if (golfVal === 'green' || golfVal === 'putting_green' || leisureVal === 'golf_green') {
+          type = 'Green';
+        }
+
+        const rawRef = tags.ref || tags.hole || '';
+        let holeNumber: number | undefined;
+        if (rawRef) {
+          const matched = rawRef.match(/\d+/);
+          if (matched) holeNumber = parseInt(matched[0], 10);
+        }
+
+        const designator = holeNumber ? `Hole ${holeNumber}` : `Way ${way.id}`;
+        const displayName = tags.name || `${designator} ${golfVal || leisureVal || 'Feature'}`;
+
+        // Add standard main path
+        tracks.push({
+          name: `${displayName} (Main)`,
+          type,
+          points: pts,
+          holeNumber,
+          playerType: 'Main',
+          golfValue: golfVal || (type === 'Green' ? 'green' : 'hole'),
+          osmTags: tags
+        });
+
+        // For the experimental prototype we auto-synthesize Scratch & Bogey tracks
+        const isHoleWay = golfVal === 'hole' || tags.ref || tags.hole;
+        if (isHoleWay && type === 'Track') {
+          // Scratch player path: slightly shifted
+          const scratchPts = pts.map(p => ({
+            lat: p.lat + 0.00003,
+            lng: p.lng + 0.00003,
+            alt: 0
+          }));
+          tracks.push({
+            name: `${displayName} (Scratch)`,
+            type: 'Track',
+            points: scratchPts,
+            holeNumber,
+            playerType: 'Scratch',
+            golfValue: 'scratch_path',
+            osmTags: tags
+          });
+
+          // Bogey player path: shifted in the opposite direction
+          const bogeyPts = pts.map(p => ({
+            lat: p.lat - 0.00003,
+            lng: p.lng - 0.00003,
+            alt: 0
+          }));
+          tracks.push({
+            name: `${displayName} (Bogey)`,
+            type: 'Track',
+            points: bogeyPts,
+            holeNumber,
+            playerType: 'Bogey',
+            golfValue: 'bogey_path',
+            osmTags: tags
+          });
+        }
+      }
+
+      // Also process independent nodes that are tagged with golf elements to have pins
+      for (const [nid, coord] of nodesMap.entries()) {
+        const fullNode = data.elements.find((e: any) => e.type === 'node' && e.id === nid);
+        if (fullNode && fullNode.tags) {
+          const tags = fullNode.tags;
+          const golfVal = tags.golf || '';
+          const rawRef = tags.ref || tags.hole || '';
+          let holeNumber: number | undefined;
+          if (rawRef) {
+            const matched = rawRef.match(/\d+/);
+            if (matched) holeNumber = parseInt(matched[0], 10);
+          }
+
+          if (golfVal === 'pin' || golfVal === 'hole' || golfVal === 'green' || golfVal === 'tee') {
+            const designator = holeNumber ? `Hole ${holeNumber}` : `Marker ${nid}`;
+            tracks.push({
+              name: tags.name || `${designator} ${golfVal}`,
+              type: golfVal === 'green' ? 'Green' : 'Point',
+              points: [{ lat: coord.lat, lng: coord.lng, alt: 0 }],
+              holeNumber,
+              playerType: 'Main',
+              golfValue: golfVal,
+              osmTags: tags
+            });
+          }
+        }
+      }
+
+      if (tracks.length === 0) {
+        throw new Error("Found elements but could not form any golf course hole layout tracks.");
+      }
+
+      tracks.sort((a, b) => (a.holeNumber || 99) - (b.holeNumber || 99));
+
+      setImportedKmlFileName(`OSM Layout - ${selectedCourse.site_name}`);
+      setImportedKmlTracks(tracks);
+
+      // Verify LiDAR coverage
+      setIsVerifyingLidar(true);
+      let totalPoints = 0;
+      let hits = 0;
+
+      const updatedTracks = await Promise.all(tracks.map(async (track) => {
+        const lidarPoints: { lat: number; lng: number; elevation: number | null }[] = [];
+        let trackHits = 0;
+
+        const stepSize = Math.max(1, Math.ceil(track.points.length / 15));
+        const pointsToCheck = track.points.filter((_, idx) => idx % stepSize === 0);
+
+        for (const pt of pointsToCheck) {
+          totalPoints++;
+          try {
+            const response = await fetch(`/api/lidar?lat=${pt.lat}&lng=${pt.lng}`);
+            if (response.ok) {
+              const data = await response.json();
+              if (data && typeof data.elevation === 'number' && data.elevation !== null) {
+                trackHits++;
+                hits++;
+                lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: data.elevation });
+              } else {
+                lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: null });
+              }
+            } else {
+              lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: null });
+            }
+          } catch (e) {
+            console.error('Lidar verification failed', e);
+            lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: null });
+          }
+        }
+
+        const coveragePercent = pointsToCheck.length > 0 ? (trackHits / pointsToCheck.length) * 100 : 0;
+        return {
+          ...track,
+          lidarPoints,
+          coveragePercent,
+        };
+      }));
+
+      setImportedKmlTracks(updatedTracks);
+      setGeneralCoveragePercent(totalPoints > 0 ? (hits / totalPoints) * 100 : 0);
+      setLidarCoverageChecked(true);
+      setIsVerifyingLidar(false);
+
+    } catch (err: any) {
+      console.error(err);
+      setOsmError(err?.message || "An error occurred while fetching from OpenStreetMap.");
+    } finally {
+      setLoadingOsm(false);
+    }
   };
 
   const courseCoords = useMemo(() => {
@@ -752,13 +972,30 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
               <button 
                 onClick={handleExportPDF}
                 disabled={isExporting || loadingWeather || lidarSummary?.scanning || loadingContact}
-                className="w-full md:w-auto bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-white/10 text-white font-bold py-3 px-6 rounded-2xl shadow-xl hover:bg-slate-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 group"
+                className="w-full md:w-auto bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-white/10 text-white font-bold py-3 px-3.5 rounded-2xl shadow-xl hover:bg-slate-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 group"
               >
                 {isExporting ? <Loader2 size={18} className="animate-spin text-blue-500" /> : <FileDown size={18} className={`${(loadingWeather || lidarSummary?.scanning || loadingContact) ? 'text-slate-500' : 'text-blue-400'} group-hover:scale-110 transition-transform`} />}
                 <span className="text-xs">
                   {isExporting ? 'EXPORTING...' : (loadingWeather || lidarSummary?.scanning || loadingContact) ? 'ANALYZING COURSE...' : 'EXPORT SUMMARY PDF'}
                 </span>
               </button>
+
+              <button 
+                onClick={handleQueryOsm}
+                disabled={loadingOsm}
+                className="w-full md:w-auto mt-3 bg-blue-900/30 hover:bg-blue-900/50 text-blue-400 border border-blue-500/30 font-bold py-3 px-3.5 rounded-2xl shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-xs"
+                title="Search and extract multi-player layouts (main, scratch, bogey paths) from OpenStreetMap"
+              >
+                {loadingOsm ? <Loader2 size={16} className="animate-spin text-blue-400" /> : <Globe size={16} />}
+                <span>{loadingOsm ? "QUERYING OSM..." : "IMPORT FOR EXPERIMENTATION"}</span>
+              </button>
+
+              {osmError && (
+                <p className="text-red-400 text-[10px] mt-2 max-w-[180px] leading-tight text-center md:text-left font-bold flex items-center gap-1">
+                  <AlertCircle size={10} className="shrink-0" />
+                  <span>{osmError}</span>
+                </p>
+              )}
             </div>
 
             {/* Weather climatology summary */}

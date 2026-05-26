@@ -44,7 +44,9 @@ import {
   Search,
   ChartSpline,
   MousePointer2,
-  Maximize2
+  Maximize2,
+  Sliders,
+  Tag
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -2378,7 +2380,30 @@ interface KmlTrack {
   coveragePercent?: number;
   holeNumber?: number;
   playerType?: 'Scratch' | 'Bogey' | 'Main';
+  osmTags?: Record<string, string>;
+  golfValue?: string;
 }
+
+const HOLE_COLORS = [
+  '#f87171', // Red 400
+  '#fb923c', // Orange 400
+  '#fbbf24', // Amber 400
+  '#34d399', // Emerald 400
+  '#22d3ee', // Cyan 400
+  '#60a5fa', // Blue 400
+  '#818cf8', // Indigo 400
+  '#a78bfa', // Purple 400
+  '#f472b6', // Pink 400
+  '#38bdf8', // Light Blue 400
+  '#a3e635', // Lime 400
+  '#2dd4bf', // Teal 400
+  '#ff4c4c', // Bright Red
+  '#fda4af', // Rose 300
+  '#c084fc', // Fuchsia 400
+  '#fb7185', // Rose 400
+  '#22c55e', // Green 500
+  '#06b6d4', // Cyan 500
+];
 
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>('landing');
@@ -2422,6 +2447,35 @@ const App: React.FC = () => {
   const [selectedCourseForPlanning, setSelectedCourseForPlanning] = useState<typeof golfCourses[0] | null>(null);
   const [planningKmlTracks, setPlanningKmlTracks] = useState<KmlTrack[]>([]);
   const [showPlanningKml, setShowPlanningKml] = useState<boolean>(true);
+  const [enabledTags, setEnabledTags] = useState<Record<string, boolean>>({});
+  const [showTagFilters, setShowTagFilters] = useState<boolean>(false);
+
+  React.useEffect(() => {
+    if (planningKmlTracks.length > 0) {
+      const tags: Record<string, boolean> = { ...enabledTags };
+      let changed = false;
+      planningKmlTracks.forEach(track => {
+        if (track.playerType) {
+          const key = `playerType:${track.playerType}`;
+          if (tags[key] === undefined) {
+            tags[key] = true;
+            changed = true;
+          }
+        }
+        const gValue = track.golfValue || (track.type === 'Green' ? 'green' : track.type === 'Point' ? 'point' : 'track');
+        const key = `golf:${gValue}`;
+        if (tags[key] === undefined) {
+          tags[key] = true;
+          changed = true;
+        }
+      });
+      if (changed) {
+        setEnabledTags(tags);
+      }
+    } else {
+      setEnabledTags({});
+    }
+  }, [planningKmlTracks]);
 
   React.useEffect(() => {
     if (mapStyle === 'LiDAR DTM') {
@@ -3590,13 +3644,84 @@ const App: React.FC = () => {
                 </button>
               )}
               {planningKmlTracks.length > 0 && (
-                <button 
-                  onClick={() => setShowPlanningKml(v => !v)} 
-                  className={`bg-slate-800 border border-white/20 p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${showPlanningKml ? 'text-emerald-400' : 'text-slate-500'}`}
-                  title={showPlanningKml ? "Hide KML Layer" : "Show KML Layer"}
-                >
-                  <Eye size={20} />
-                </button>
+                <>
+                  <button 
+                    onClick={() => setShowPlanningKml(v => !v)} 
+                    className={`bg-slate-800 border border-white/20 p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${showPlanningKml ? 'text-emerald-400' : 'text-slate-500'}`}
+                    title={showPlanningKml ? "Hide KML Layer" : "Show KML Layer"}
+                  >
+                    <Eye size={20} />
+                  </button>
+
+                  <div className="relative">
+                    <button 
+                      onClick={() => setShowTagFilters(v => !v)} 
+                      className={`bg-slate-800 border border-white/20 p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${showTagFilters ? 'text-blue-400 border-blue-500/50' : 'text-slate-400'}`}
+                      title="Filter OSM/KML Layers & Tags"
+                    >
+                      <Sliders size={20} />
+                    </button>
+
+                    {showTagFilters && (
+                      <div className="absolute top-14 right-0 w-64 bg-slate-900/95 border border-white/10 p-4 rounded-2xl shadow-2xl backdrop-blur-md flex flex-col gap-3 z-[1001] text-left">
+                        <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                          <span className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-1.5">
+                            <Tag size={12} className="text-blue-400" />
+                            <span>KML / OSM Layer Filters</span>
+                          </span>
+                          <button 
+                            onClick={() => setEnabledTags(prev => {
+                              const next = { ...prev };
+                              Object.keys(next).forEach(k => { next[k] = true; });
+                              return next;
+                            })}
+                            className="text-[9px] font-bold text-blue-400 uppercase tracking-widest hover:underline"
+                          >
+                            All On
+                          </button>
+                        </div>
+
+                        <div className="max-h-60 overflow-y-auto no-scrollbar flex flex-col gap-2">
+                          {Object.keys(enabledTags).length === 0 ? (
+                            <p className="text-[10px] text-slate-500 italic text-center py-2">No tags or categories detected.</p>
+                          ) : (
+                            Object.entries(enabledTags).map(([tagKey, isEnabled]) => {
+                              const [type, value] = tagKey.split(':');
+                              let displayLabel = value;
+                              if (type === 'playerType') {
+                                displayLabel = `${value} Path`;
+                              } else if (type === 'golf') {
+                                if (value === 'hole') displayLabel = 'Hole Lines';
+                                else if (value === 'green') displayLabel = 'Green Areas';
+                                else if (value === 'pin') displayLabel = 'Pins';
+                                else if (value === 'tee') displayLabel = 'Tees';
+                                else if (value === 'scratch_path') displayLabel = 'Scratch Paths';
+                                else if (value === 'bogey_path') displayLabel = 'Bogey Paths';
+                                else if (value === 'bunker') displayLabel = 'Bunkers';
+                                else if (value === 'fairway') displayLabel = 'Fairways';
+                              }
+
+                              // Capitalize nicely
+                              displayLabel = displayLabel.charAt(0).toUpperCase() + displayLabel.slice(1);
+
+                              return (
+                                <label key={tagKey} className="flex items-center justify-between gap-3 text-xs text-slate-300 font-medium cursor-pointer py-1 px-2 rounded-lg hover:bg-white/5 select-none">
+                                  <span>{displayLabel}</span>
+                                  <input 
+                                    type="checkbox" 
+                                    checked={isEnabled} 
+                                    onChange={() => setEnabledTags(prev => ({ ...prev, [tagKey]: !prev[tagKey] }))}
+                                    className="accent-emerald-500 rounded border-white/10 w-3.5 h-3.5"
+                                  />
+                                </label>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
               <button 
                 onClick={() => { if (!isPlanningSession) { setIsFollowing(true); setMapLockKey(k => k + 1); setLocationResetKey(k => k + 1); } }} 
@@ -3754,6 +3879,14 @@ const App: React.FC = () => {
                   </React.Fragment>
                 ))}
                 {showPlanningKml && planningKmlTracks.filter(feat => {
+                  if (feat.playerType) {
+                    const key = `playerType:${feat.playerType}`;
+                    if (enabledTags[key] === false) return false;
+                  }
+                  const gValue = feat.golfValue || (feat.type === 'Green' ? 'green' : feat.type === 'Point' ? 'point' : 'track');
+                  const gKey = `golf:${gValue}`;
+                  if (enabledTags[gKey] === false) return false;
+
                   if (feat.type === 'Green' || feat.type === 'Point') return true;
 
                   const hasScratchBogeyInKml = planningKmlTracks.some(t => t.playerType === 'Scratch') && planningKmlTracks.some(t => t.playerType === 'Bogey');
@@ -3781,6 +3914,15 @@ const App: React.FC = () => {
                     return match ? parseInt(match[1], 10) : undefined;
                   })();
 
+                  const getFeatureColor = (holeNum: number | undefined, altIdx: number) => {
+                    if (holeNum !== undefined) {
+                      return HOLE_COLORS[(holeNum - 1) % HOLE_COLORS.length];
+                    }
+                    return HOLE_COLORS[altIdx % HOLE_COLORS.length];
+                  };
+
+                  const featColor = getFeatureColor(holeNumToDisplay, fIdx);
+
                   if (feat.type === 'Green') {
                     // Compute polygon center
                     let sumLat = 0, sumLng = 0;
@@ -3795,10 +3937,10 @@ const App: React.FC = () => {
                         <Polygon 
                           positions={positions} 
                           pathOptions={{
-                            fillColor: '#10b981', 
+                            fillColor: featColor, 
                             fillOpacity: 0.25, 
                             weight: 2, 
-                            color: '#34d399'
+                            color: featColor
                           }}
                         >
                           <Tooltip sticky><span className="text-xs font-bold">{feat.name}</span></Tooltip>
@@ -3807,7 +3949,7 @@ const App: React.FC = () => {
                           position={center} 
                           icon={L.divIcon({
                             className: '',
-                            html: `<div class="w-6 h-6 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center shadow-lg text-white font-black text-xs" title="${feat.name}">${holeNumToDisplay || ''}</div>`,
+                            html: `<div class="w-6 h-6 border-2 border-white rounded-full flex items-center justify-center shadow-lg text-white font-black text-xs" style="background-color: ${featColor};" title="${feat.name}">${holeNumToDisplay || ''}</div>`,
                             iconSize: [24, 24],
                             iconAnchor: [12, 12]
                           })}
@@ -3825,20 +3967,20 @@ const App: React.FC = () => {
                         <Polyline 
                           positions={positions} 
                           pathOptions={{
-                            color: feat.playerType === 'Scratch' ? '#10b981' : feat.playerType === 'Bogey' ? '#facc15' : '#60a5fa', 
+                            color: featColor, 
                             weight: 4,
-                            dashArray: feat.type === 'Point' ? '5, 5' : undefined
+                            dashArray: feat.playerType === 'Scratch' ? '5, 5' : feat.playerType === 'Bogey' ? '2, 5' : undefined
                           }} 
                         >
                           <Tooltip sticky><span className="text-xs font-bold">{feat.name}</span></Tooltip>
                         </Polyline>
 
-                        {/* Tee: Small Square */}
+                        {/* Tee: Small Square with Teebox Color border or simple outline */}
                         <Marker 
                           position={teePt}
                           icon={L.divIcon({
                             className: '',
-                            html: `<div class="w-3.5 h-3.5 ${feat.playerType === 'Scratch' ? 'bg-emerald-400' : feat.playerType === 'Bogey' ? 'bg-yellow-400' : 'bg-amber-400'} border-2 border-slate-950 shadow-md" style="border-radius: 2px;" title="${feat.name} Tee"></div>`,
+                            html: `<div class="w-3.5 h-3.5 border-2 border-slate-950 shadow-md" style="border-radius: 2px; background-color: ${featColor};" title="${feat.name} Tee"></div>`,
                             iconSize: [14, 14],
                             iconAnchor: [7, 7]
                           })}
@@ -3851,7 +3993,7 @@ const App: React.FC = () => {
                           position={greenPt}
                           icon={L.divIcon({
                             className: '',
-                            html: `<div class="w-6 h-6 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center shadow-lg text-white font-black text-xs" title="${feat.name} Green">${holeNumToDisplay || ''}</div>`,
+                            html: `<div class="w-6 h-6 border-2 border-white rounded-full flex items-center justify-center shadow-lg text-white font-black text-xs" style="background-color: ${featColor};" title="${feat.name} Green">${holeNumToDisplay || ''}</div>`,
                             iconSize: [24, 24],
                             iconAnchor: [12, 12]
                           })}
