@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Search, MapPin, ChevronRight, X, Navigation2, Zap, Wind, Loader2, Database, CheckCircle2, AlertCircle, FileDown, Globe, Phone, Home, BookOpen } from 'lucide-react';
-import { MapContainer, TileLayer, Marker } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Polyline, Polygon } from 'react-leaflet';
 import L from 'leaflet';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -24,6 +24,20 @@ interface CourseContactInfo {
   verified_match: boolean;
 }
 
+interface KmlPoint {
+  lat: number;
+  lng: number;
+  alt: number;
+}
+
+interface KmlTrack {
+  name: string;
+  type: 'Track' | 'Green' | 'Point';
+  points: KmlPoint[];
+  lidarPoints?: { lat: number; lng: number; elevation: number | null }[];
+  coveragePercent?: number;
+}
+
 interface CoursePlanningProps {
   onSelect: (lat: number, lng: number, name: string) => void;
   onClose: () => void;
@@ -40,6 +54,108 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
   const [loadingContact, setLoadingContact] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const pdfRef = useRef<HTMLDivElement>(null);
+
+  const [importedKmlFileName, setImportedKmlFileName] = useState<string>('');
+  const [importedKmlTracks, setImportedKmlTracks] = useState<KmlTrack[]>([]);
+  const [isVerifyingLidar, setIsVerifyingLidar] = useState<boolean>(false);
+  const [lidarCoverageChecked, setLidarCoverageChecked] = useState<boolean>(false);
+  const [generalCoveragePercent, setGeneralCoveragePercent] = useState<number>(0);
+
+  const handleKmlUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const fileName = file.name;
+    setImportedKmlFileName(fileName);
+    setLidarCoverageChecked(false);
+    setGeneralCoveragePercent(0);
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const text = event.target?.result as string;
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(text, "text/xml");
+      const placemarks = xmlDoc.getElementsByTagName("Placemark");
+      const tracks: KmlTrack[] = [];
+
+      for (let i = 0; i < placemarks.length; i++) {
+        const p = placemarks[i];
+        const nameStr = p.getElementsByTagName("name")[0]?.textContent || `Feature ${i + 1}`;
+        const descStr = p.getElementsByTagName("description")[0]?.textContent || "";
+
+        // Check coordinates
+        let coordsNode = p.getElementsByTagName("coordinates")[0];
+        if (!coordsNode) continue;
+        const coordsStr = coordsNode.textContent || "";
+        const rawPoints = coordsStr.trim().split(/\s+/).map(c => {
+          const parts = c.split(',').map(Number);
+          return { lat: parts[1], lng: parts[0], alt: parts[2] || 0 };
+        }).filter(pt => !isNaN(pt.lat) && !isNaN(pt.lng));
+
+        if (rawPoints.length === 0) continue;
+
+        const isGreen = !!p.getElementsByTagName("Polygon")[0] || descStr.includes("Type: Green") || nameStr.toLowerCase().includes("green");
+        const isPoint = !!p.getElementsByTagName("Point")[0] && rawPoints.length === 1;
+
+        tracks.push({
+          name: nameStr,
+          type: isGreen ? 'Green' : isPoint ? 'Point' : 'Track',
+          points: rawPoints,
+        });
+      }
+
+      setImportedKmlTracks(tracks);
+
+      if (tracks.length > 0) {
+        setIsVerifyingLidar(true);
+        let totalPoints = 0;
+        let hits = 0;
+
+        const updatedTracks = await Promise.all(tracks.map(async (track) => {
+          const lidarPoints: { lat: number; lng: number; elevation: number | null }[] = [];
+          let trackHits = 0;
+
+          // If track has many points, sample them to stay fast (max 15 key points per track)
+          const stepSize = Math.max(1, Math.ceil(track.points.length / 15));
+          const pointsToCheck = track.points.filter((_, idx) => idx % stepSize === 0);
+
+          for (const pt of pointsToCheck) {
+            totalPoints++;
+            try {
+              const response = await fetch(`/api/lidar?lat=${pt.lat}&lng=${pt.lng}`);
+              if (response.ok) {
+                const data = await response.json();
+                if (data && typeof data.elevation === 'number' && data.elevation !== null) {
+                  trackHits++;
+                  hits++;
+                  lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: data.elevation });
+                } else {
+                  lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: null });
+                }
+              } else {
+                lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: null });
+              }
+            } catch (e) {
+              console.error('Lidar verification failed', e);
+              lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: null });
+            }
+          }
+
+          const coveragePercent = pointsToCheck.length > 0 ? (trackHits / pointsToCheck.length) * 100 : 0;
+          return {
+            ...track,
+            lidarPoints,
+            coveragePercent,
+          };
+        }));
+
+        setImportedKmlTracks(updatedTracks);
+        setGeneralCoveragePercent(totalPoints > 0 ? (hits / totalPoints) * 100 : 0);
+        setLidarCoverageChecked(true);
+        setIsVerifyingLidar(false);
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const courseCoords = useMemo(() => {
     if (!selectedCourse) return null;
@@ -394,9 +510,156 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
             </button>
           )}
         </div>
+
+        <label className="w-full bg-slate-900 border border-emerald-500/20 hover:border-emerald-500/40 text-emerald-400 font-bold py-3.5 px-4 rounded-2xl shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 uppercase text-xs cursor-pointer text-center">
+          <FileDown size={16} />
+          <span>Load Pre-existing KML for Verification</span>
+          <input 
+            type="file" 
+            accept=".kml" 
+            onChange={handleKmlUpload} 
+            className="hidden" 
+          />
+        </label>
       </div>
 
       <div className="flex-1 overflow-y-auto no-scrollbar flex flex-col gap-2 pb-8">
+        {importedKmlTracks.length > 0 && (
+          <div className="bg-slate-900 border border-slate-800 rounded-[2rem] p-6 shadow-2xl relative overflow-hidden backdrop-blur-md mb-6 w-full animate-in zoom-in-95 duration-350 shrink-0">
+            <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-600/10 blur-3xl -z-10" />
+            
+            <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-emerald-500/10 rounded-full flex items-center justify-center">
+                  <BookOpen size={16} className="text-emerald-400" />
+                </div>
+                <div>
+                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] leading-none mb-1">KML Verification</h4>
+                  <span className="text-sm font-bold text-white uppercase tracking-widest leading-none block mt-1">{importedKmlFileName || 'Loaded KML'}</span>
+                </div>
+              </div>
+              <button 
+                onClick={() => { setImportedKmlTracks([]); setImportedKmlFileName(''); setLidarCoverageChecked(false); }}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-full active:scale-95 transition-all"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="flex flex-col md:flex-row gap-6">
+              {/* Left Side: Info and Coverage Status */}
+              <div className="flex-1 flex flex-col justify-between gap-4">
+                <div>
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="bg-slate-950/50 border border-white/5 p-3 rounded-xl">
+                      <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Features Found</p>
+                      <p className="text-lg font-black text-white">{importedKmlTracks.length}</p>
+                    </div>
+                    <div className="bg-slate-950/50 border border-white/5 p-3 rounded-xl">
+                      <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Types Identified</p>
+                      <p className="text-xs font-bold text-slate-300">
+                        {importedKmlTracks.filter(t => t.type === 'Track').length} Tracks<br />
+                        {importedKmlTracks.filter(t => t.type === 'Green').length} Greens
+                      </p>
+                    </div>
+                  </div>
+
+                  {isVerifyingLidar && (
+                    <div className="bg-blue-950/20 border border-blue-800/20 rounded-xl p-4 flex items-center gap-3 mb-4 animate-pulse">
+                      <Loader2 size={16} className="text-blue-500 animate-spin" />
+                      <span className="text-xs font-bold text-slate-300">Checking LiDAR coverage for features...</span>
+                    </div>
+                  )}
+
+                  {lidarCoverageChecked && (
+                    <div className={`p-4 rounded-xl border mb-4 flex items-center gap-3 ${generalCoveragePercent > 0 ? 'bg-emerald-950/20 border-emerald-800/20 text-emerald-400' : 'bg-red-950/20 border-red-800/20 text-red-400'}`}>
+                      {generalCoveragePercent > 0 ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
+                      <div>
+                        <p className="text-[9px] font-black uppercase tracking-widest leading-none mb-1">LiDAR Coverage Status</p>
+                        <p className="text-sm font-black">
+                          {generalCoveragePercent.toFixed(0)}% Coverage Verified
+                        </p>
+                        <p className="text-[10px] text-slate-400 leading-tight mt-1">
+                          {generalCoveragePercent === 100 
+                            ? 'Full LiDAR coverage confirmed. The file is ready for processing.' 
+                            : generalCoveragePercent > 0 
+                            ? 'Partial LiDAR coverage detected. Some areas of this KML have gaps.' 
+                            : 'No LiDAR coverage found at these coordinates.'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-[10px] text-slate-500 italic max-w-sm">
+                  Interactive preview showing features matching your rating system.
+                </div>
+              </div>
+
+              {/* Right Side: Preview Map */}
+              <div className="w-full md:w-[320px] h-[220px] rounded-2xl overflow-hidden border border-white/10 relative bg-slate-950 shrink-0 shadow-lg">
+                <MapContainer 
+                  center={[importedKmlTracks[0].points[0].lat, importedKmlTracks[0].points[0].lng]} 
+                  zoom={15} 
+                  className="h-full w-full"
+                  zoomControl={true}
+                  attributionControl={false}
+                >
+                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                  {importedKmlTracks.map((feat, fIdx) => {
+                    const positions = feat.points.map(p => [p.lat, p.lng] as [number, number]);
+                    if (feat.type === 'Green') {
+                      return (
+                        <Polygon 
+                          key={fIdx} 
+                          positions={positions} 
+                          fillColor={generalCoveragePercent > 0 ? '#10b981' : '#f43f5e'} 
+                          fillOpacity={0.4} 
+                          weight={2} 
+                          color={generalCoveragePercent > 0 ? '#34d399' : '#f43f5e'} 
+                        />
+                      );
+                    } else if (positions.length > 1) {
+                      return (
+                        <Polyline 
+                          key={fIdx} 
+                          positions={positions} 
+                          color={generalCoveragePercent > 0 ? '#60a5fa' : '#ef4444'} 
+                          weight={3} 
+                        />
+                      );
+                    } else if (positions.length === 1) {
+                      return (
+                        <Marker 
+                          key={fIdx} 
+                          position={positions[0]} 
+                          icon={L.divIcon({
+                            className: '',
+                            html: `<div class="w-2.5 h-2.5 bg-blue-500 rounded-full border-2 border-white shadow-md"></div>`,
+                            iconSize: [10, 10],
+                            iconAnchor: [5, 5]
+                          })}
+                        />
+                      );
+                    }
+                    return null;
+                  })}
+                </MapContainer>
+                {/* Legend Overlay */}
+                <div className="absolute bottom-2 left-2 bg-black/80 backdrop-blur-sm px-2.5 py-1.5 rounded-lg border border-white/5 text-[8px] text-white font-bold flex flex-col gap-1 z-[1000] pointer-events-none">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-1.5 bg-[#60a5fa] rounded-sm block" />
+                    <span>Track Line</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-1.5 bg-[#34d399] rounded-sm block opacity-70" />
+                    <span>Green Area</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         {filtered.map((course, idx) => (
           <button 
             key={idx}
