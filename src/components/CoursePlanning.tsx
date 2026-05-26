@@ -4,7 +4,6 @@ import { MapContainer, TileLayer, Marker, Polyline, Polygon } from 'react-leafle
 import L from 'leaflet';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
-import { GoogleGenAI, Type } from '@google/genai';
 import { golfCourses } from '../constants/golfCourses';
 import { osgbToWgs84 } from '../utils/coords';
 import { fetchAverageWindData, WindData } from '../services/windService';
@@ -174,6 +173,9 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                     hits++;
                   }
                   break; // Success, exit retry loop
+                } else if (response.status === 404) {
+                  // A 404 means definitively "No elevation data found at this location". Do not retry!
+                  break;
                 }
               } catch (e) {
                 if (attempt === 3) {
@@ -389,40 +391,13 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
   }, [selectedCourse]);
 
   const fetchContactInfo = async (course: typeof golfCourses[0]) => {
-    const coords = osgbToWgs84(course.easting, course.northing);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Find the official contact information for the golf course: "${course.site_name}" located in "${course.town}", Scotland (Approx. Coords: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}).
-
-        STRICT LOCATION VERIFICATION:
-        1. Identify the exact club at the provided town and coordinates.
-        2. BEWARE: Avoid confusion with similarly named clubs (e.g., "Musselburgh Golf Club" vs "Royal Musselburgh Golf Club").
-        3. Verify the found course's postcode area matches the expected area for ${course.town}.
-        4. If the closest match is in a different town or has a different postcode area than expected for ${course.town}, do not confirm the match.
-
-        Return ONLY a JSON object with: website (full URL), phone, full_address, postcode, and verified_match (boolean).`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              website: { type: Type.STRING },
-              phone: { type: Type.STRING },
-              full_address: { type: Type.STRING },
-              postcode: { type: Type.STRING },
-              verified_match: { type: Type.BOOLEAN }
-            },
-            required: ["website", "phone", "full_address", "postcode", "verified_match"]
-          },
-          tools: [{ googleSearch: {} }],
-          toolConfig: { includeServerSideToolInvocations: true }
-        }
-      });
-
-      if (response.text) {
-        const data = JSON.parse(response.text.trim()) as CourseContactInfo;
+      const site_name = encodeURIComponent(course.site_name);
+      const town = encodeURIComponent(course.town);
+      const url = `/api/contact-info?site_name=${site_name}&town=${town}&easting=${course.easting}&northing=${course.northing}`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json() as CourseContactInfo;
         return data.verified_match ? data : null;
       }
     } catch (error) {
@@ -476,6 +451,9 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                   hits++;
                 }
                 break; // Exit retry loop on success
+              } else if (response.status === 404) {
+                // A 404 means definitively "No elevation data found at this location". Do not retry!
+                break;
               }
             } catch (e) {
               if (attempt < 3) {
