@@ -498,7 +498,8 @@ async function startServer() {
         params: { data },
         timeout: 45000,
         headers: {
-          'Accept': 'application/json, */*'
+          'Accept': 'application/json, */*',
+          'User-Agent': 'ScottishGolfRatingToolkit/3.0 (nigel.lorriman@gmail.com; compliant client)'
         }
       });
       res.json(response.data);
@@ -520,8 +521,15 @@ async function startServer() {
 
     try {
       if (!process.env.GEMINI_API_KEY) {
-        console.warn("[Contact Info API] GEMINI_API_KEY is not defined in process.env");
-        return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
+        console.warn("[Contact Info API] GEMINI_API_KEY is not defined in process.env. Returning fallback.");
+        return res.status(200).json({
+          website: "",
+          phone: "",
+          full_address: "",
+          postcode: "",
+          verified_match: false,
+          error: "GEMINI_API_KEY is not configured on the server."
+        });
       }
 
       // Convert Easting & Northing to lat/lng using BNG
@@ -586,7 +594,14 @@ Return ONLY a JSON object with: website (full URL), phone, full_address, postcod
       res.json(parsed);
     } catch (error: any) {
       console.error('[Contact Info API] Error:', error.message);
-      res.status(500).json({ error: 'Failed to fetch contact info', details: error.message });
+      res.status(200).json({
+        website: "",
+        phone: "",
+        full_address: "",
+        postcode: "",
+        verified_match: false,
+        error: error.message
+      });
     }
   });
 
