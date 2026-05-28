@@ -1063,10 +1063,10 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                 onClick={handleQueryOsm}
                 disabled={loadingOsm}
                 className="w-full md:w-auto mt-3 bg-blue-900/30 hover:bg-blue-900/50 text-blue-400 border border-blue-500/30 font-bold py-3 px-3.5 rounded-2xl shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-xs"
-                title="Search and extract multi-player layouts (main, scratch, bogey paths) from OpenStreetMap"
+                title="Import Open Street Map data within 3km radius"
               >
                 {loadingOsm ? <Loader2 size={16} className="animate-spin text-blue-400" /> : <Globe size={16} />}
-                <span>{loadingOsm ? "QUERYING OSM..." : "IMPORT FOR EXPERIMENTATION"}</span>
+                <span>{loadingOsm ? "QUERYING OSM..." : "IMPORT OSM GOLF MAPS"}</span>
               </button>
 
               {osmError && (
