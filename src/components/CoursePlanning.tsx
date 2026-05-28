@@ -207,60 +207,103 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
 
       if (tracks.length > 0) {
         setIsVerifyingLidar(true);
-        let totalPoints = 0;
-        let hits = 0;
 
-        const updatedTracks: KmlTrack[] = [];
+        // Try to automatically find a matching golf course in our database
+        // based on the first point of the parsed KML tracks
+        const firstPt = tracks[0]?.points?.[0];
+        if (firstPt) {
+          let closestCourse = null;
+          let minDistance = Infinity;
 
-        // Process sequentially to avoid flooding the backend / upstream WMS with high concurrent loads
-        for (const track of tracks) {
-          const lidarPoints: { lat: number; lng: number; elevation: number | null }[] = [];
-          let trackHits = 0;
+          for (const course of golfCourses) {
+            const courseWgs84 = osgbToWgs84(course.easting, course.northing);
+            const dLat = firstPt.lat - courseWgs84.lat;
+            const dLng = firstPt.lng - courseWgs84.lng;
+            const distSq = dLat * dLat + dLng * dLng;
+            if (distSq < minDistance) {
+              minDistance = distSq;
+              closestCourse = course;
+            }
+          }
 
-          // Sample at most 2 key points per track for lightweight verification without congestion
+          // If the closest course is within approx 3.5km (0.001 deg^2)
+          if (closestCourse && minDistance < 0.001) {
+            setSelectedCourse(closestCourse);
+          }
+        }
+
+        // Define all points that need to be verified
+        const verifyTasks: { trackIdx: number; ptIdx: number; lat: number; lng: number }[] = [];
+        tracks.forEach((track, trackIdx) => {
           const stepSize = Math.max(1, Math.ceil(track.points.length / 2));
-          const pointsToCheck = track.points.filter((_, idx) => idx % stepSize === 0);
+          track.points.forEach((pt, ptIdx) => {
+            if (ptIdx % stepSize === 0) {
+              verifyTasks.push({ trackIdx, ptIdx, lat: pt.lat, lng: pt.lng });
+            }
+          });
+        });
 
-          for (const pt of pointsToCheck) {
-            totalPoints++;
+        // Fetch in parallel using batches of 15 to avoid overwhelming while still performing lightning-fast checks
+        const elevationsMap = new Map<string, number | null>();
+        const batchSize = 15;
+
+        for (let i = 0; i < verifyTasks.length; i += batchSize) {
+          const batch = verifyTasks.slice(i, i + batchSize);
+          await Promise.all(batch.map(async (task) => {
+            const key = `${task.lat}_${task.lng}`;
             let elevationVal: number | null = null;
             
-            // Safe retry mechanism (up to 3 attempts with exponential backoff)
             for (let attempt = 1; attempt <= 3; attempt++) {
               try {
-                const response = await fetch(`/api/lidar?lat=${pt.lat}&lng=${pt.lng}`);
+                const response = await fetch(`/api/lidar?lat=${task.lat}&lng=${task.lng}`);
                 const contentType = response.headers.get('content-type');
                 if (response.ok && contentType && contentType.includes('application/json')) {
                   const data = await response.json();
                   if (data && typeof data.elevation === 'number' && data.elevation !== null) {
                     elevationVal = data.elevation;
-                    trackHits++;
-                    hits++;
                   }
-                  break; // Success, exit retry loop
+                  break; // Success, exit retry
                 } else if (response.status === 404) {
-                  // A 404 means definitively "No elevation data found at this location". Do not retry!
-                  break;
+                  break; // No elevation data found
                 }
               } catch (e) {
-                if (attempt === 3) {
-                  console.warn(`Lidar verification warning: Final retry failed for point [${pt.lat}, ${pt.lng}]`);
-                } else {
-                  // Wait, then retry
+                if (attempt < 3) {
                   await new Promise(resolve => setTimeout(resolve, attempt * 150));
                 }
               }
             }
-            lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: elevationVal });
-          }
+            elevationsMap.set(key, elevationVal);
+          }));
+        }
+
+        // Map the results back to the tracks
+        let totalPoints = 0;
+        let hits = 0;
+        const updatedTracks = tracks.map((track) => {
+          const lidarPoints: { lat: number; lng: number; elevation: number | null }[] = [];
+          let trackHits = 0;
+
+          const stepSize = Math.max(1, Math.ceil(track.points.length / 2));
+          const pointsToCheck = track.points.filter((_, idx) => idx % stepSize === 0);
+
+          pointsToCheck.forEach((pt) => {
+            totalPoints++;
+            const key = `${pt.lat}_${pt.lng}`;
+            const elevationVal = elevationsMap.has(key) ? elevationsMap.get(key) : null;
+            if (elevationVal !== undefined && elevationVal !== null) {
+              trackHits++;
+              hits++;
+            }
+            lidarPoints.push({ lat: pt.lat, lng: pt.lng, elevation: elevationVal ?? null });
+          });
 
           const coveragePercent = pointsToCheck.length > 0 ? (trackHits / pointsToCheck.length) * 100 : 0;
-          updatedTracks.push({
+          return {
             ...track,
             lidarPoints,
             coveragePercent,
-          });
-        }
+          };
+        });
 
         setImportedKmlTracks(updatedTracks);
         setGeneralCoveragePercent(totalPoints > 0 ? (hits / totalPoints) * 100 : 0);
@@ -848,7 +891,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                     </div>
                   )}
 
-                  {lidarCoverageChecked && !importedKmlFileName.startsWith('OSM Layout') && (
+                  {lidarCoverageChecked && (
                     <div className={`p-4 rounded-xl border mb-4 flex items-center gap-3 ${generalCoveragePercent > 0 ? 'bg-emerald-950/20 border-emerald-800/20 text-emerald-400' : 'bg-red-950/20 border-red-800/20 text-red-400'}`}>
                       {generalCoveragePercent > 0 ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
                       <div>
