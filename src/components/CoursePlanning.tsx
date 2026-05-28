@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, MapPin, ChevronRight, X, Navigation2, Zap, Wind, Loader2, Database, CheckCircle2, AlertCircle, FileDown, Globe, Phone, Home, BookOpen } from 'lucide-react';
+import { Search, MapPin, ChevronRight, X, Navigation2, Zap, Wind, Loader2, Database, CheckCircle2, AlertCircle, FileDown, Globe, Phone, Home, BookOpen, Download } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Polyline, Polygon } from 'react-leaflet';
 import L from 'leaflet';
 import { jsPDF } from 'jspdf';
@@ -66,6 +66,70 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
 
   const [loadingOsm, setLoadingOsm] = useState<boolean>(false);
   const [osmError, setOsmError] = useState<string | null>(null);
+
+  const exportOsmToKml = () => {
+    if (importedKmlTracks.length === 0) return;
+    
+    let kml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+    kml += `<kml xmlns="http://www.opengis.net/kml/2.2">\n`;
+    kml += `  <Document>\n`;
+    kml += `    <name>${importedKmlFileName || 'OSM Layout'}</name>\n`;
+    
+    importedKmlTracks.forEach((track) => {
+      const typeStr = track.type;
+      const nameEscaped = track.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const playerDesc = track.playerType ? `; Player: ${track.playerType}` : '';
+      const golfDesc = track.golfValue ? `; GolfValue: ${track.golfValue}` : '';
+      
+      kml += `    <Placemark>\n`;
+      kml += `      <name>${nameEscaped}</name>\n`;
+      kml += `      <description>Type: ${typeStr}${playerDesc}${golfDesc}</description>\n`;
+      
+      if (typeStr === 'Green') {
+        const coords = track.points.map(p => `${p.lng},${p.lat},${p.alt || 0}`).join(' ');
+        const closedCoords = track.points.length > 0 && 
+            (track.points[0].lat !== track.points[track.points.length - 1].lat || 
+             track.points[0].lng !== track.points[track.points.length - 1].lng)
+          ? `${coords} ${track.points[0].lng},${track.points[0].lat},${track.points[0].alt || 0}`
+          : coords;
+          
+        kml += `      <Polygon>\n`;
+        kml += `        <outerBoundaryIs>\n`;
+        kml += `          <LinearRing>\n`;
+        kml += `            <coordinates>${closedCoords}</coordinates>\n`;
+        kml += `          </LinearRing>\n`;
+        kml += `        </outerBoundaryIs>\n`;
+        kml += `      </Polygon>\n`;
+      } else if (typeStr === 'Track') {
+        const coords = track.points.map(p => `${p.lng},${p.lat},${p.alt || 0}`).join(' ');
+        kml += `      <LineString>\n`;
+        kml += `        <coordinates>${coords}</coordinates>\n`;
+        kml += `      </LineString>\n`;
+      } else { // 'Point'
+        const pt = track.points[0];
+        if (pt) {
+          kml += `      <Point>\n`;
+          kml += `        <coordinates>${pt.lng},${pt.lat},${pt.alt || 0}</coordinates>\n`;
+          kml += `      </Point>\n`;
+        }
+      }
+      kml += `    </Placemark>\n`;
+    });
+    
+    kml += `  </Document>\n`;
+    kml += `</kml>\n`;
+    
+    const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const sanitizedFileName = (importedKmlFileName || 'OSM_Layout').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    a.download = `${sanitizedFileName}.kml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const handleKmlUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -216,13 +280,13 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
     setGeneralCoveragePercent(0);
 
     try {
-      // Overpass QL query for golf elements within 2000m of the selected course
+      // Overpass QL query for golf elements within 3000m of the selected course
       const query = `[out:json][timeout:30];
       (
-        node["golf"](around:2000, ${coords.lat}, ${coords.lng});
-        way["golf"](around:2000, ${coords.lat}, ${coords.lng});
-        relation["golf"](around:2000, ${coords.lat}, ${coords.lng});
-        way["leisure"="golf_course"](around:2000, ${coords.lat}, ${coords.lng});
+        node["golf"](around:3000, ${coords.lat}, ${coords.lng});
+        way["golf"](around:3000, ${coords.lat}, ${coords.lng});
+        relation["golf"](around:3000, ${coords.lat}, ${coords.lng});
+        way["leisure"="golf_course"](around:3000, ${coords.lat}, ${coords.lng});
       );
       out body;
       >;
@@ -238,7 +302,7 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
 
       const data = await response.json();
       if (!data || !data.elements || data.elements.length === 0) {
-        throw new Error("No golf features found within 2000m on OpenStreetMap.");
+        throw new Error("No golf features found within 3000m on OpenStreetMap.");
       }
 
       const nodesMap = new Map<number, { lat: number, lng: number }>();
@@ -804,18 +868,29 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                   )}
 
                   {lidarCoverageChecked && importedKmlTracks.length > 0 && (
-                    <button
-                      onClick={() => {
-                        const firstPt = importedKmlTracks[0]?.points?.[0];
-                        if (firstPt) {
-                          onSelect(firstPt.lat, firstPt.lng, importedKmlFileName.replace(/\.[^/.]+$/, ""), importedKmlTracks);
-                        }
-                      }}
-                      className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3 px-4 rounded-xl shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-2 uppercase tracking-wider text-xs mb-4"
-                    >
-                      <Navigation2 size={14} className="fill-current" />
-                      <span>Go to course</span>
-                    </button>
+                    <>
+                      <button
+                        onClick={() => {
+                          const firstPt = importedKmlTracks[0]?.points?.[0];
+                          if (firstPt) {
+                            onSelect(firstPt.lat, firstPt.lng, importedKmlFileName.replace(/\.[^/.]+$/, ""), importedKmlTracks);
+                          }
+                        }}
+                        className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3 px-4 rounded-xl shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-2 uppercase tracking-wider text-xs mb-4"
+                      >
+                        <Navigation2 size={14} className="fill-current" />
+                        <span>Go to course</span>
+                      </button>
+                      {importedKmlFileName.startsWith('OSM Layout') && (
+                        <button
+                          onClick={exportOsmToKml}
+                          className="w-full bg-slate-800 hover:bg-slate-700 text-white border border-white/10 font-black py-3 px-4 rounded-xl shadow-lg active:scale-[0.98] transition-all flex items-center justify-center gap-2 uppercase tracking-wider text-xs mb-4"
+                        >
+                          <Download size={14} />
+                          <span>Export OSM mapping as KML</span>
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
 
