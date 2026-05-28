@@ -231,6 +231,8 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       const response = await fetch(`/api/overpass?data=${encodeURIComponent(query)}`);
       const contentType = response.headers.get('content-type');
       if (!response.ok || !contentType || !contentType.includes('application/json')) {
+        const textPreview = await response.text();
+        console.error(`[Overpass Error Details] Status: ${response.status}, Content-Type: ${contentType}, Body:`, textPreview.substring(0, 300));
         throw new Error(`Failed to contact OSM Overpass API. Status: ${response.status}`);
       }
 
