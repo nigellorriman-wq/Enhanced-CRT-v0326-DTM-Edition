@@ -492,16 +492,19 @@ async function startServer() {
       return res.status(400).json({ error: 'Missing data query parameter' });
     }
     
-    console.log(`[Proxy Overpass API] Querying Overpass API`);
+    console.log(`[Proxy Overpass API] Querying Overpass API via POST`);
     try {
-      const response = await axios.get("https://overpass-api.de/api/interpreter", {
-        params: { data },
-        timeout: 45000,
-        headers: {
-          'Accept': 'application/json, */*',
-          'User-Agent': 'ScottishGolfRatingToolkit/3.0 (nigel.lorriman@gmail.com; compliant client)'
+      const response = await axios.post("https://overpass-api.de/api/interpreter", 
+        `data=${encodeURIComponent(data)}`,
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json, */*',
+            'User-Agent': 'ScottishGolfRatingToolkit/3.0 (nigel.lorriman@gmail.com; compliant client)'
+          },
+          timeout: 45000
         }
-      });
+      );
       res.json(response.data);
     } catch (error: any) {
       console.error(`[Proxy Overpass API] Error querying Overpass:`, error.message);
