@@ -28,7 +28,8 @@ export const fetchAverageWindData = async (lat: number, lng: number): Promise<Wi
       const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lng}&start_date=${start}&end_date=${end}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&timezone=GMT`;
       
       const response = await fetch(url);
-      if (!response.ok) continue;
+      const contentType = response.headers.get('content-type');
+      if (!response.ok || !contentType || !contentType.includes('application/json')) continue;
       
       const data = await response.json();
       const times = data.hourly?.time;

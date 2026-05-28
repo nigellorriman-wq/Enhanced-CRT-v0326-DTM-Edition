@@ -165,7 +165,8 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
             for (let attempt = 1; attempt <= 3; attempt++) {
               try {
                 const response = await fetch(`/api/lidar?lat=${pt.lat}&lng=${pt.lng}`);
-                if (response.ok) {
+                const contentType = response.headers.get('content-type');
+                if (response.ok && contentType && contentType.includes('application/json')) {
                   const data = await response.json();
                   if (data && typeof data.elevation === 'number' && data.elevation !== null) {
                     elevationVal = data.elevation;
@@ -228,7 +229,8 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       out skel qt;`;
 
       const response = await fetch(`/api/overpass?data=${encodeURIComponent(query)}`);
-      if (!response.ok) {
+      const contentType = response.headers.get('content-type');
+      if (!response.ok || !contentType || !contentType.includes('application/json')) {
         throw new Error(`Failed to contact OSM Overpass API. Status: ${response.status}`);
       }
 
@@ -396,7 +398,8 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
       const town = encodeURIComponent(course.town);
       const url = `/api/contact-info?site_name=${site_name}&town=${town}&easting=${course.easting}&northing=${course.northing}`;
       const response = await fetch(url);
-      if (response.ok) {
+      const contentType = response.headers.get('content-type');
+      if (response.ok && contentType && contentType.includes('application/json')) {
         const data = await response.json() as CourseContactInfo;
         return data.verified_match ? data : null;
       }
@@ -444,7 +447,8 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
               const response = await fetch(`/api/lidar?lat=${pt.lat}&lng=${pt.lng}`);
-              if (response.ok) {
+              const contentType = response.headers.get('content-type');
+              if (response.ok && contentType && contentType.includes('application/json')) {
                 const data = await response.json();
                 if (data && typeof data.elevation === 'number' && data.elevation !== null) {
                   elevationVal = data.elevation;

@@ -201,7 +201,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       });
       clearTimeout(timeoutId);
 
-      if (!response.ok) {
+      const contentType = response.headers.get('content-type');
+      if (!response.ok || !contentType || !contentType.includes('application/json')) {
         elevationCache.current.set(preciseKey, null);
         deadZoneCache.current.add(coarseKey);
         return null;
