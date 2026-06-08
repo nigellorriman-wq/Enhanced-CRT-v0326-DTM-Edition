@@ -379,11 +379,11 @@ The App is able to display the 'Accuracy Pattern' in real-time for Scratch and B
     content: "The Green Report Tool will take an exported KML file (from the Green Mapper toolkit), produce a full report on every green and export it as a PDF file. Each green will occupy a single A4 page and the final page will show satellite imagery of the entire course, with each green drawn in its correct location."
   },
   {
-    title: "Stimping sloped greens",
+    title: "Green Speed Calc",
     color: "text-lime-400",
     icon: <Gauge className="text-lime-400" />,
-    content: "While the best procedure is to find a flat area on the green on which to stimp, when it is not possible to find a flat area to measure, refer to 'Course Rating Manual 9.Green Surface'. Find the most uniform area. Roll balls down and then up. Enter the averaged values into the App and it will calculate the corrected speed and contour category based on those values. Refer to the 'Green Surface Rating Table' to determine the rating."
-  },
+    content: "This command will calculate the speed of a green by combining measurements in one direction and then the other. While the best procedure is to find a flat area on the green on which to stimp, when it is not possible to find a flat area to measure, refer to 'Course Rating Manual 9.Green Surface'. Find the most uniform area. Roll balls down and then up. Enter the averaged values into the App and it will calculate the corrected speed and contour category based on those values. It will also show the 'Green Surface Rating Table' values for scratch and bogey players." 
+    },
   {
     title: "Sensor Diagnostics",
     color: "text-rose-700",
