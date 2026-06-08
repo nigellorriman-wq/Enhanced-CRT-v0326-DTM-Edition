@@ -1173,6 +1173,59 @@ const UserManual: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   );
 };
 
+const getGreenSurfaceRatingRow = (speed: number) => {
+  const ft = Math.floor(speed);
+  const inches = Math.round((speed - ft) * 12);
+  let totalInches = ft * 12 + inches;
+  if (inches === 12) {
+    totalInches = (ft + 1) * 12;
+  }
+
+  if (totalInches <= 83) {
+    return {
+      range: "6'11\" or less",
+      rfgs_s: 3, rfgs_b: 3,
+      mcms_s: 4, mcms_b: 4,
+      hcss_s: 5, hcss_b: 5
+    };
+  } else if (totalInches <= 101) {
+    return {
+      range: "7' to 8' 5\"",
+      rfgs_s: 4, rfgs_b: 4,
+      mcms_s: 5, mcms_b: 5,
+      hcss_s: 6, hcss_b: 6
+    };
+  } else if (totalInches <= 119) {
+    return {
+      range: "8' 6\" to 9' 11\"",
+      rfgs_s: 5, rfgs_b: 5,
+      mcms_s: 6, mcms_b: 6,
+      hcss_s: 7, hcss_b: 8
+    };
+  } else if (totalInches <= 131) {
+    return {
+      range: "10' to 10' 11\"",
+      rfgs_s: 6, rfgs_b: 6,
+      mcms_s: 7, mcms_b: 8,
+      hcss_s: 8, hcss_b: 9
+    };
+  } else if (totalInches <= 143) {
+    return {
+      range: "11' to 11' 11\"",
+      rfgs_s: 7, rfgs_b: 7,
+      mcms_s: 8, mcms_b: 9,
+      hcss_s: 9, hcss_b: 10
+    };
+  } else {
+    return {
+      range: "12' or more",
+      rfgs_s: 8, rfgs_b: 8,
+      mcms_s: 9, mcms_b: 10,
+      hcss_s: 10, hcss_b: 10
+    };
+  }
+};
+
 const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [sDownFt, setSDownFt] = useState(0);
   const [sDownIn, setSDownIn] = useState(0);
@@ -1209,7 +1262,7 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   return (
     <div className="fixed inset-0 z-[2000] bg-[#020617] flex flex-col p-4 overflow-y-auto no-scrollbar">
       <div className="flex justify-between items-center mb-4 mt-2">
-<button 
+        <button 
           onClick={onClose} 
           className="bg-slate-800 border border-white/20 w-[46px] h-[46px] rounded-full flex items-center justify-center shadow-2xl active:scale-95 transition-all"
           title="Home"
@@ -1219,14 +1272,14 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         <h1 className="text-3xl tracking-tighter font-semibold text-blue-500">Sloping Greens</h1>
       </div>
       <div className="flex flex-col items-center mb-6">
-        <p className="text-white text-[9px] font-black uppercase tracking-widest text-center">Speed correction for sloping greens</p>
+        <p className="text-white text-[11px] font-black uppercase tracking-widest text-center">Speed correction for sloping greens</p>
       </div>
       <div className="flex flex-col gap-4">
         <div className="bg-slate-900/50 border border-white/5 rounded-[1.8rem] p-4">
           <h3 className="text-lg font-black text-orange-400 uppercase tracking-tight mb-4">s(down) Distance</h3>
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col items-center gap-2">
-              <span className="text-[9px] font-black text-white uppercase">Feet</span>
+              <span className="text-sm font-black text-white uppercase tracking-wider">Feet</span>
               <div className="flex items-stretch bg-slate-800/80 rounded-[1.2rem] overflow-hidden border border-white/5 w-full h-[120px]">
                 <div className="flex-1 flex items-center justify-center bg-slate-900/40"><span className="text-3xl font-black tabular-nums">{sDownFt}</span></div>
                 <div className="w-16 flex flex-col border-l border-white/5">
@@ -1236,7 +1289,7 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               </div>
             </div>
             <div className="flex flex-col items-center gap-2">
-              <span className="text-[9px] font-black text-white uppercase">Inches</span>
+              <span className="text-sm font-black text-white uppercase tracking-wider">Inches</span>
               <div className="flex items-stretch bg-slate-800/80 rounded-[1.2rem] overflow-hidden border border-white/5 w-full h-[120px]">
                 <div className="flex-1 flex items-center justify-center bg-slate-900/40"><span className="text-3xl font-black tabular-nums">{sDownIn}</span></div>
                 <div className="w-16 flex flex-col border-l border-white/5">
@@ -1251,7 +1304,7 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <h3 className="text-lg font-black text-emerald-400 uppercase tracking-tight mb-4">s(up) Distance</h3>
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col items-center gap-2">
-              <span className="text-[9px] font-black text-white uppercase">Feet</span>
+              <span className="text-sm font-black text-white uppercase tracking-wider">Feet</span>
               <div className="flex items-stretch bg-slate-800/80 rounded-[1.2rem] overflow-hidden border border-white/5 w-full h-[120px]">
                 <div className="flex-1 flex items-center justify-center bg-slate-900/40"><span className="text-3xl font-black tabular-nums">{sUpFt}</span></div>
                 <div className="w-16 flex flex-col border-l border-white/5">
@@ -1261,7 +1314,7 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               </div>
             </div>
             <div className="flex flex-col items-center gap-2">
-              <span className="text-[9px] font-black text-white uppercase">Inches</span>
+              <span className="text-sm font-black text-white uppercase tracking-wider">Inches</span>
               <div className="flex items-stretch bg-slate-800/80 rounded-[1.2rem] overflow-hidden border border-white/5 w-full h-[120px]">
                 <div className="flex-1 flex items-center justify-center bg-slate-900/40"><span className="text-3xl font-black tabular-nums">{sUpIn}</span></div>
                 <div className="w-16 flex flex-col border-l border-white/5">
@@ -1276,18 +1329,48 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <button onClick={calculate} disabled={(sDownFt === 0 && sDownIn === 0) || (sUpFt === 0 && sUpIn === 0)} className="w-full bg-blue-600 border-2 border-blue-500 rounded-full py-4 font-bold text-xs tracking-[0.2em] uppercase text-white shadow-xl active:scale-95 disabled:opacity-30 transition-all">Calculate Speed</button>
           {result !== null && (
             <div ref={resultRef} className="bg-white/[0.04] border border-blue-500/30 rounded-[1.8rem] p-6 flex flex-col items-start animate-in zoom-in-95 duration-300">
-              <span className="text-[9px] font-bold text-blue-400 uppercase tracking-[0.3em] mb-2 w-full text-left">Corrected Green Speed</span>
+              <span className="text-[10px] font-bold text-white uppercase tracking-[0.3em] mb-2 w-full text-left">Corrected Green Speed</span>
               <div className="text-5xl font-bold text-white tabular-nums leading-none mb-1 flex items-center justify-between w-full">
                 <span className="text-left">{formatResult(result)}</span>
                 {slopeCat && (
-                  <div className="flex flex-col items-center">
-                    <span className="text-2xl text-blue-400 bg-blue-400/10 px-3 py-1 rounded-xl border border--400/20 tabular-nums">({slopeCat})</span>
-                    {slopeSub && <span className="text-[14px] font-bold text-blue-500 uppercase mt-1 tracking-widest">{slopeSub}</span>}
+                  <div className="flex flex-col items-end">
+                    <span className="text-2xl text-white bg-white/10 px-3 py-1 rounded-xl border border-white/25 tabular-nums">({slopeCat})</span>
+                    {slopeSub && <span className="text-[14px] font-black text-white uppercase mt-1 tracking-widest">{slopeSub}</span>}
                   </div>
                 )}
               </div>
+
+              {/* Green Surface Rating Section */}
+              {(() => {
+                const row = getGreenSurfaceRatingRow(result);
+                const sub = (slopeSub || "").toUpperCase();
+                const isRfgs = sub.includes("RF/GS");
+                const isMcms = sub.includes("MC/MS");
+                const isHcss = sub.includes("HC/SS");
+                const currentScratch = isRfgs ? row.rfgs_s : isMcms ? row.mcms_s : row.hcss_s;
+                const currentBogey = isRfgs ? row.rfgs_b : isMcms ? row.mcms_b : row.hcss_b;
+
+                return (
+                  <div className="mt-4 pt-4 border-t border-white/10 w-full flex flex-col gap-4">
+                    <div className="flex flex-col gap-1 w-full">
+                      <span className="text-[11px] font-black text-white uppercase tracking-wider">Green Surface Rating ({row.range})</span>
+                      <div className="grid grid-cols-2 gap-4 mt-2">
+                        <div className="bg-white/[0.02] border border-white/5 p-3 rounded-xl flex flex-col items-center justify-center">
+                          <span className="text-[10px] text-white uppercase tracking-wider font-semibold">Scratch Player</span>
+                          <span className="text-3xl font-black text-amber-400 mt-1">{currentScratch}</span>
+                        </div>
+                        <div className="bg-white/[0.02] border border-white/5 p-3 rounded-xl flex flex-col items-center justify-center">
+                          <span className="text-[10px] text-white uppercase tracking-wider font-semibold">Bogey Player</span>
+                          <span className="text-3xl font-black text-emerald-400 mt-1">{currentBogey}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="mt-6 pt-6 border-t border-white/10 w-full flex justify-center">
-                <p className="text-center font-light text-white leading-relaxed tracking-tight text-[14px]">(2x<span className="text-orange-400 font-semibold">s(down)</span> x <span className="text-emerald-400 font-semibold">s(up)</span>)÷(<span className="text-orange-400 font-semibold">s(down)</span>+<span className="text-emerald-400 font-semibold">s(up)</span>)</p>
+                <p className="text-center font-bold text-white leading-relaxed tracking-tight text-[14px]">When Steeply Sloped (2x<span className="text-orange-400 font-semibold">s(down)</span> x <span className="text-emerald-400 font-semibold">s(up)</span>)÷(<span className="text-orange-400 font-semibold">s(down)</span>+<span className="text-emerald-400 font-semibold">s(up)</span>)</p>
               </div>
             </div>
           )}
@@ -3486,8 +3569,8 @@ const App: React.FC = () => {
             </label>
             <button onClick={() => { setViewingRecord(null); setView('stimp'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all h-full">
               <div className="w-16 h-16 bg-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-emerald-600/40"><Gauge size={28} /></div>
-              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-emerald-500">Stimp Slopes</h2>
-              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Speed correction for sloping greens</p>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-emerald-500">Green Speed Calc</h2>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Green Surface Rating calculator</p>
             </button>
             <button onClick={() => setView('manual')} className="bg-slate-800/50 border border-white/10 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:bg-slate-700 transition-colors h-full">
               <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mb-6 shadow-xl border border-blue-500/30"><BookOpen size={28} className="text-blue-400" /></div>
