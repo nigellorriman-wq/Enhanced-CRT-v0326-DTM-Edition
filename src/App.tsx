@@ -607,11 +607,24 @@ const getEGDAnalysis = (points: GeoPoint[], forceSimpleAverage: boolean = false)
     if (w1 && w3) {
       w1_yds = (w1.maxT - w1.minT) * 1.09361;
       w3_yds = (w3.maxT - w3.minT) * 1.09361;
-      if (Math.abs(w1_yds - w3_yds) / Math.max(w1_yds, w3_yds) > 0.25) {
+      const w2_yds = W_yds;
+      const maxW = Math.max(w1_yds, w2_yds, w3_yds);
+      const minW = Math.min(w1_yds, w2_yds, w3_yds);
+      
+      if (maxW > 0 && (maxW - minW) / maxW > 0.20) {
         isInconsistent = true;
         method = "One dimension not consistent";
-        const avgShort = (w1_yds + w3_yds) / 2;
-        egd_yds = (L_yds + avgShort) / 2;
+        const avgW = (w1_yds + w2_yds + w3_yds) / 3;
+        const effRatio = avgW > 0 ? L_yds / avgW : ratio;
+        
+        if (effRatio >= 3) {
+          egd_yds = (3 * avgW + L_yds) / 4;
+        } else if (effRatio >= 2) {
+          egd_yds = (2 * avgW + L_yds) / 3;
+        } else {
+          egd_yds = (L_yds + avgW) / 2;
+        }
+        
         pC1 = fromXY(q1X + nx * w1.maxT, q1Y + ny * w1.maxT);
         pD1 = fromXY(q1X + nx * w1.minT, q1Y + ny * w1.minT);
         pC3 = fromXY(q3X + nx * w3.maxT, q3Y + ny * w3.maxT);
@@ -740,7 +753,8 @@ const analyzeGreenShape = (points: GeoPoint[], concavityThreshold: number = 0.82
   const midY = (toY(basic.pA) + toY(basic.pB)) / 2;
   const midpointIsOutside = !isPointInPolygon({ x: midX, y: midY }, polyCoords);
 
-  const isLShape = midpointIsOutside || concavity < concavityThreshold || basic.ratio > 3.6;
+  // Changed from: const isLShape = midpointIsOutside || concavity < concavityThreshold || basic.ratio > 3.6;
+  const isLShape = midpointIsOutside || concavity < concavityThreshold;
 
   if (isLShape) {
     let elbowIdx = 0;
