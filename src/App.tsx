@@ -4580,8 +4580,19 @@ const App: React.FC = () => {
                         </div>
                       </div>
                       <div className="col-span-1 text-center border-l border-white/10 flex flex-col items-center justify-center">
-                        <span className="text-[10px] font-bold text-white/40 uppercase block mb-2 leading-none">ELEVATION</span>
-                        <div className={`text-4xl font-bold tabular-nums leading-none tracking-tighter ${(!viewingRecord && !['Barometric', 'LiDAR DTM'].includes(getVerticalMethod(pos?.altAccuracy ?? null, pos?.alt ?? null))) ? 'text-rose-500 animate-pulse' : 'text-yellow-400'}`}>{`${effectiveMetrics.elevRater > 0 ? '+' : ''}${effectiveMetrics.elevRater.toFixed(1)}`}<span className="text-[10px] ml-0.5 opacity-40 uppercase">{units === 'Yards' ? 'FT' : 'M'}</span></div>
+                        <span className="text-[10px] font-bold text-white/40 uppercase block mb-2 leading-none">{!trkActive && !viewingRecord ? 'ALTITUDE' : 'ELEVATION'}</span>
+                        <div className={`text-4xl font-bold tabular-nums leading-none tracking-tighter ${(!viewingRecord && !['Barometric', 'LiDAR DTM'].includes(getVerticalMethod(pos?.altAccuracy ?? null, pos?.alt ?? null))) ? 'text-rose-500 animate-pulse' : 'text-yellow-400'}`}>
+                          {(() => {
+                            if (!trkActive && !viewingRecord) {
+                              if (pos?.alt !== null && pos?.alt !== undefined) {
+                                return (pos.alt * elevMult).toFixed(1);
+                              }
+                              return '--';
+                            }
+                            return `${effectiveMetrics.elevRater > 0 ? '+' : ''}${effectiveMetrics.elevRater.toFixed(1)}`;
+                          })()}
+                          <span className="text-[10px] ml-0.5 opacity-40 uppercase">{units === 'Yards' ? 'FT' : 'M'}</span>
+                        </div>
                       </div>
                     </div>
                     {pos && !viewingRecord && !isPlanningSession && (
@@ -4713,11 +4724,7 @@ const App: React.FC = () => {
                           <button onClick={() => { 
                             if(!trkActive) { 
                               setTrkActive(true); 
-                              if (isPlanningSession) {
-                                setTrkPoints([]); // Don't add first point automatically in planning
-                              } else {
-                                setTrkPoints(pos ? [pos] : []); 
-                              }
+                              setTrkPoints(pos ? [pos] : []); 
                               setCurrentPivots([]); 
                             } else { 
                               let finalPath = [...trkPoints];
