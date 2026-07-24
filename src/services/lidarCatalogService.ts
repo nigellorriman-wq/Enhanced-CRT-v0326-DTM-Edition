@@ -126,28 +126,32 @@ class LidarCatalogService {
   }
 
   private getBNGGridRef(easting: number, northing: number): string {
-    // Convert easting/northing to standard OS Grid Reference (e.g. NT1134)
-    // 100km square letters
     const e100 = Math.floor(easting / 100000);
     const n100 = Math.floor(northing / 100000);
     
     if (e100 < 0 || e100 > 6 || n100 < 0 || n100 > 12) return `BNG_${Math.floor(easting/1000)}_${Math.floor(northing/1000)}`;
 
-    // The OS grid letters are a bit complex to calculate perfectly without a large lookup table
-    // but we can approximate the most common ones for Scotland
-    let prefix = '??';
+    const e500 = Math.floor(e100 / 5);
+    const n500 = Math.floor(n100 / 5);
     
-    // Grid of 100km squares for Scotland/Northern UK
-    const grid: Record<string, string> = {
-      '1,4': 'NW', '2,4': 'NX', '3,4': 'NY', '4,4': 'NZ',
-      '1,5': 'NR', '2,5': 'NS', '3,5': 'NT', '4,5': 'NU',
-      '1,6': 'NM', '2,6': 'NN', '3,6': 'NO', '4,6': 'NP',
-      '1,7': 'NG', '2,7': 'NH', '3,7': 'NJ', '4,7': 'NK',
-      '1,8': 'NB', '2,8': 'NC', '3,8': 'ND', '4,8': 'NE',
-      '0,9': 'NA', '1,9': 'NA' // Simplified
-    };
+    let l1 = "S";
+    if (e500 === 0 && n500 === 1) l1 = "N";
+    else if (e500 === 0 && n500 === 2) l1 = "H";
+    else if (e500 === 1 && n500 === 0) l1 = "T";
+    else if (e500 === 1 && n500 === 1) l1 = "O";
 
-    prefix = grid[`${e100},${n100}`] || 'NT'; // Default to NT if not found (Central Belt)
+    const remE = ((e100 % 5) + 5) % 5;
+    const remN = ((n100 % 5) + 5) % 5;
+    
+    const letters = [
+      ["A", "B", "C", "D", "E"],
+      ["F", "G", "H", "J", "K"],
+      ["L", "M", "N", "O", "P"],
+      ["Q", "R", "S", "T", "U"],
+      ["V", "W", "X", "Y", "Z"]
+    ];
+    
+    const prefix = l1 + letters[4 - remN][remE];
     
     const eKm = Math.floor((easting % 100000) / 1000).toString().padStart(2, '0');
     const nKm = Math.floor((northing % 100000) / 1000).toString().padStart(2, '0');
