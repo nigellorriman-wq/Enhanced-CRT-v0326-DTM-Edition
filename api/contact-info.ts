@@ -57,7 +57,7 @@ STRICT LOCATION VERIFICATION:
 Return ONLY a JSON object with: website (full URL), phone, full_address, postcode, and verified_match (boolean).`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -84,14 +84,17 @@ Return ONLY a JSON object with: website (full URL), phone, full_address, postcod
     const parsed = JSON.parse(responseText.trim());
     res.status(200).json(parsed);
   } catch (error: any) {
-    console.error('[Contact Info API] Error:', error.message);
+    console.warn('[Contact Info API] Handled error:', error.message);
+    const isQuota = error.status === 429 || error.message?.includes('429') || error.message?.includes('quota') || error.message?.includes('RESOURCE_EXHAUSTED');
     res.status(200).json({
       website: "",
       phone: "",
       full_address: "",
       postcode: "",
       verified_match: false,
-      error: error.message
+      error: isQuota 
+        ? "Contact info lookup temporarily rate-limited (quota limit). Please try again in a moment." 
+        : (error.message || "Failed to retrieve contact info")
     });
   }
 }

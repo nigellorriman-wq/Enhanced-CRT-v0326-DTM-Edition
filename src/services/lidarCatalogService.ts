@@ -101,7 +101,7 @@ class LidarCatalogService {
             name: `LiDAR Ph${phase} ${res}m - ${gridRef}`,
             // Use BNG coordinates in the WCS request for perfect alignment
             // Using the specific WCS endpoint and correct coverage ID
-            url: `https://srsp-ows.jncc.gov.uk/wcs?service=WCS&version=1.0.0&request=GetCoverage&coverage=${coverageId}&format=image/tiff&bbox=${e},${n},${e + 1000},${n + 1000}&width=${size}&height=${size}&crs=EPSG:27700`,
+            url: `https://ows.remotesensing.data.gov.scot/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=${coverageId}&styles=&bbox=${e},${n},${e + 1000},${n + 1000}&width=${size}&height=${size}&srs=EPSG:27700&format=image/geotiff`,
             resolution: res,
             phase: phase,
             gridRef,

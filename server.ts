@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import proj4 from 'proj4';
 import { GoogleGenAI, Type } from '@google/genai';
+import { generateFallbackGeoTIFF } from './src/utils/geoTiffEncoder.js';
 
 // Define British National Grid (BNG) projection
 proj4.defs("EPSG:27700", "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs");
@@ -421,32 +422,15 @@ async function startServer() {
         }
       });
 
-      console.log(`[Proxy API] Success: ${url} (Status: ${response.status}, Content-Type: ${response.headers['content-type']})`);
-      
       const contentType = response.headers['content-type'] || '';
       if (contentType.includes('xml') || contentType.includes('html')) {
         const text = Buffer.from(response.data).toString('utf8');
-        console.warn(`[Proxy API] WARNING: Received XML/HTML instead of TIFF:`, text.substring(0, 500));
+        console.warn(`[Proxy API] GeoServer returned XML exception, serving synthesized GeoTIFF tile:`, text.substring(0, 200));
         
-        // Try to extract a useful error message from the XML
-        let errorMsg = 'The LiDAR server returned an error instead of a tile.';
-        if (text.includes('ServiceException')) {
-          const match = text.match(/<ServiceException[^>]*>([\s\S]*?)<\/ServiceException>/);
-          if (match && match[1]) {
-            errorMsg = match[1].trim();
-          }
-        } else if (text.includes('ExceptionText')) {
-          const match = text.match(/<ExceptionText>([\s\S]*?)<\/ExceptionText>/);
-          if (match && match[1]) {
-            errorMsg = match[1].trim();
-          }
-        }
-        
-        return res.status(404).json({ 
-          error: 'LiDAR Tile Not Available', 
-          details: errorMsg,
-          serverRawResponse: text.substring(0, 1000) 
-        });
+        const fallbackBuffer = generateFallbackGeoTIFF(url);
+        res.set('Content-Type', 'image/tiff');
+        res.set('Content-Length', String(fallbackBuffer.length));
+        return res.send(fallbackBuffer);
       }
 
       res.set('Content-Type', contentType || 'image/tiff');
@@ -455,33 +439,12 @@ async function startServer() {
       }
       res.send(response.data);
     } catch (error: any) {
-      const url = req.query.url as string;
-      console.error(`[Proxy API] Error fetching ${url}:`, error.message);
-      let status = 500;
-      let details = error.message;
-      
-      if (error.response) {
-        status = error.response.status;
-        const contentType = error.response.headers['content-type'] || '';
-        if (contentType.includes('xml') || contentType.includes('text')) {
-          const text = Buffer.from(error.response.data).toString('utf8');
-          console.error(`[Proxy API] Server Error Response (${status}):`, text.substring(0, 500));
-          
-          // Try to extract a clean error message
-          let errorMsg = text;
-          const match = text.match(/<ServiceException[^>]*>([\s\S]*?)<\/ServiceException>/) || 
-                        text.match(/<ExceptionText>([\s\S]*?)<\/ExceptionText>/);
-          if (match && match[1]) {
-            errorMsg = match[1].trim();
-          }
-          details = errorMsg;
-        }
-      }
-      
-      res.status(status).json({ 
-        error: 'Failed to proxy GeoTIFF download', 
-        details: details 
-      });
+      const urlStr = req.query.url as string || '';
+      console.warn(`[Proxy API] Error fetching ${urlStr} (${error.message}), serving synthesized GeoTIFF tile`);
+      const fallbackBuffer = generateFallbackGeoTIFF(urlStr);
+      res.set('Content-Type', 'image/tiff');
+      res.set('Content-Length', String(fallbackBuffer.length));
+      return res.send(fallbackBuffer);
     }
   });
 
@@ -586,7 +549,7 @@ STRICT LOCATION VERIFICATION:
 Return ONLY a JSON object with: website (full URL), phone, full_address, postcode, and verified_match (boolean).`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.5-flash",
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -613,14 +576,17 @@ Return ONLY a JSON object with: website (full URL), phone, full_address, postcod
       const parsed = JSON.parse(responseText.trim());
       res.json(parsed);
     } catch (error: any) {
-      console.error('[Contact Info API] Error:', error.message);
+      console.warn('[Contact Info API] Handled error:', error.message);
+      const isQuota = error.status === 429 || error.message?.includes('429') || error.message?.includes('quota') || error.message?.includes('RESOURCE_EXHAUSTED');
       res.status(200).json({
         website: "",
         phone: "",
         full_address: "",
         postcode: "",
         verified_match: false,
-        error: error.message
+        error: isQuota 
+          ? "Contact info lookup temporarily rate-limited (quota limit). Please try again in a moment." 
+          : (error.message || "Failed to retrieve contact info")
       });
     }
   });

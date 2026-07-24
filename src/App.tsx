@@ -1887,6 +1887,12 @@ const TerrainManager: React.FC<{
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [downloadReport, setDownloadReport] = useState<{
+    total: number;
+    successCount: number;
+    failedCount: number;
+    items: { tileName: string; gridRef: string; status: 'success' | 'fallback' | 'failed'; details?: string }[];
+  } | null>(null);
 
   const groupedTiles = useMemo(() => {
     const groups = new Map<string, LidarTile[]>();
@@ -1929,8 +1935,8 @@ const TerrainManager: React.FC<{
       const tiles = await lidarCatalogService.findTiles(searchBounds);
       onDiscoveredTilesChange(tiles);
       if (tiles.length > 0) {
-        // Smart selection: For each grid square, pick ALL phases at the highest available resolution
-        // This ensures fallbacks are available if the latest phase is incomplete (null levels)
+        // Select the latest phase tile for each grid square in the required area.
+        // If a grid square is missing from the latest phase, selects the next phase down to populate all parts.
         const gridMap = new Map<string, LidarTile[]>();
         tiles.forEach(tile => {
           const existing = gridMap.get(tile.gridRef) || [];
@@ -1939,12 +1945,13 @@ const TerrainManager: React.FC<{
 
         const selectedIds = new Set<string>();
         gridMap.forEach((groupTiles) => {
-          const bestRes = Math.min(...groupTiles.map(t => t.resolution));
-          groupTiles.forEach(t => {
-            if (t.resolution === bestRes) {
-              selectedIds.add(t.id);
-            }
+          const sorted = [...groupTiles].sort((a, b) => {
+            if (b.phase !== a.phase) return b.phase - a.phase;
+            return a.resolution - b.resolution;
           });
+          if (sorted.length > 0) {
+            selectedIds.add(sorted[0].id);
+          }
         });
         onSetSelection(selectedIds);
       }
@@ -1958,35 +1965,73 @@ const TerrainManager: React.FC<{
   const handleDownloadTile = async (tile: LidarTile) => {
     setIsDownloading(true);
     setError(null);
+    setDownloadReport(null);
     try {
       const downloaded = await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
-      if (downloaded) onGeoTiffDownload(downloaded);
+      if (downloaded) {
+        onGeoTiffDownload(downloaded);
+        setDownloadReport({
+          total: 1,
+          successCount: 1,
+          failedCount: 0,
+          items: [{ tileName: tile.name, gridRef: tile.gridRef, status: 'success', details: 'Stored offline successfully.' }]
+        });
+      }
     } catch (err: any) {
       console.error(`Failed to download ${tile.name}`, err);
+      const primaryErr = err.message || 'Download failed';
       
-      // Try fallback to other phases or resolutions for the same gridRef
+      // Try fallback to other phases or resolutions for the same gridRef (prioritizing latest phase first)
       const fallbacks = discoveredTiles
         .filter(t => t.gridRef === tile.gridRef && t.id !== tile.id)
         .sort((a, b) => {
-          if (a.resolution !== b.resolution) return a.resolution - b.resolution;
-          return b.phase - a.phase;
+          if (b.phase !== a.phase) return b.phase - a.phase;
+          return a.resolution - b.resolution;
         });
       
       let fallbackSuccess = false;
+      let fallbackTileName = '';
       for (const fallback of fallbacks) {
         try {
           console.log(`Trying fallback for ${tile.gridRef}: ${fallback.name}`);
           const downloaded = await lidarGeoTiffService.downloadAndStore(fallback.url, fallback.name);
-          if (downloaded) onGeoTiffDownload(downloaded);
-          fallbackSuccess = true;
-          break;
+          if (downloaded) {
+            onGeoTiffDownload(downloaded);
+            fallbackSuccess = true;
+            fallbackTileName = fallback.name;
+            break;
+          }
         } catch (fe) {
           console.error(`Fallback failed for ${fallback.name}`, fe);
         }
       }
       
-      if (!fallbackSuccess) {
-        setError(err.message || `Failed to download ${tile.name} and no fallbacks available.`);
+      if (fallbackSuccess) {
+        setDownloadReport({
+          total: 1,
+          successCount: 1,
+          failedCount: 0,
+          items: [{
+            tileName: tile.name,
+            gridRef: tile.gridRef,
+            status: 'fallback',
+            details: `Primary download issue (${primaryErr}). Downloaded fallback: ${fallbackTileName}`
+          }]
+        });
+      } else {
+        const errorMsg = primaryErr || `Failed to download ${tile.name}`;
+        setError(errorMsg);
+        setDownloadReport({
+          total: 1,
+          successCount: 0,
+          failedCount: 1,
+          items: [{
+            tileName: tile.name,
+            gridRef: tile.gridRef,
+            status: 'failed',
+            details: errorMsg
+          }]
+        });
       }
     } finally {
       setIsDownloading(false);
@@ -1999,7 +2044,10 @@ const TerrainManager: React.FC<{
 
     setIsDownloading(true);
     setError(null);
+    setDownloadReport(null);
     let successCount = 0;
+    let failedCount = 0;
+    const reportItems: { tileName: string; gridRef: string; status: 'success' | 'fallback' | 'failed'; details?: string }[] = [];
     
     try {
       for (let i = 0; i < selectedTiles.length; i++) {
@@ -2009,17 +2057,26 @@ const TerrainManager: React.FC<{
           const downloaded = await lidarGeoTiffService.downloadAndStore(tile.url, tile.name);
           if (downloaded) onGeoTiffDownload(downloaded);
           successCount++;
-        } catch (e) {
+          reportItems.push({
+            tileName: tile.name,
+            gridRef: tile.gridRef,
+            status: 'success',
+            details: 'Stored offline successfully'
+          });
+        } catch (e: any) {
           console.error(`Failed to download ${tile.name}`, e);
-          // Try fallback to other phases or resolutions for the same gridRef
+          const primaryErr = e.message || 'Download failed';
+
+          // Try fallback to other phases or resolutions for the same gridRef (prioritizing latest phase first)
           const fallbacks = discoveredTiles
             .filter(t => t.gridRef === tile.gridRef && t.id !== tile.id)
             .sort((a, b) => {
-              if (a.resolution !== b.resolution) return a.resolution - b.resolution;
-              return b.phase - a.phase;
+              if (b.phase !== a.phase) return b.phase - a.phase;
+              return a.resolution - b.resolution;
             });
           
           let fallbackSuccess = false;
+          let fallbackTileName = '';
           for (const fallback of fallbacks) {
             try {
               console.log(`Trying fallback for ${tile.gridRef}: ${fallback.name}`);
@@ -2027,6 +2084,13 @@ const TerrainManager: React.FC<{
               if (downloaded) onGeoTiffDownload(downloaded);
               successCount++;
               fallbackSuccess = true;
+              fallbackTileName = fallback.name;
+              reportItems.push({
+                tileName: tile.name,
+                gridRef: tile.gridRef,
+                status: 'fallback',
+                details: `Primary phase issue (${primaryErr}). Downloaded fallback ${fallbackTileName}`
+              });
               break;
             } catch (fe) {
               console.error(`Fallback failed for ${fallback.name}`, fe);
@@ -2034,13 +2098,26 @@ const TerrainManager: React.FC<{
           }
           
           if (!fallbackSuccess) {
-            console.error(`No available phases for ${tile.gridRef} could be downloaded.`);
+            failedCount++;
+            reportItems.push({
+              tileName: tile.name,
+              gridRef: tile.gridRef,
+              status: 'failed',
+              details: primaryErr
+            });
           }
         }
       }
       
-      if (successCount < selectedTiles.length) {
-        setError(`Downloaded ${successCount} of ${selectedTiles.length} tiles. Some failed.`);
+      setDownloadReport({
+        total: selectedTiles.length,
+        successCount,
+        failedCount,
+        items: reportItems
+      });
+
+      if (failedCount > 0) {
+        setError(`Downloaded ${successCount} of ${selectedTiles.length} tiles. ${failedCount} tile(s) had downloading issues.`);
       }
     } catch (err: any) {
       setError(err.message || "Failed to download selected tiles");
@@ -2190,10 +2267,10 @@ const TerrainManager: React.FC<{
 
                 <div className="grid grid-cols-1 gap-2 max-h-64 overflow-y-auto pr-2 no-scrollbar">
                   {Array.from(groupedTiles.entries()).map(([gridRef, tiles]) => {
-                    // Pick the best tile to represent the group (lowest resolution, highest phase)
+                    // Pick the best tile to represent the group (prioritizing highest phase, then resolution)
                     const bestTile = [...tiles].sort((a, b) => {
-                      if (a.resolution !== b.resolution) return a.resolution - b.resolution;
-                      return b.phase - a.phase;
+                      if (b.phase !== a.phase) return b.phase - a.phase;
+                      return a.resolution - b.resolution;
                     })[0];
                     
                     const selectedTile = tiles.find(t => selectedTileIds.has(t.id)) || bestTile;
@@ -2344,6 +2421,47 @@ const TerrainManager: React.FC<{
             </label>
           </div>
         </div>
+
+        {downloadReport && (
+          <div className="mt-4 bg-slate-950 border border-white/10 rounded-2xl p-4 space-y-3">
+            <div className="flex justify-between items-center border-b border-white/5 pb-2">
+              <div className="flex items-center gap-2">
+                <Download size={14} className="text-blue-400" />
+                <h4 className="text-[10px] font-bold text-white uppercase tracking-widest">Download Status Report</h4>
+              </div>
+              <button 
+                onClick={() => setDownloadReport(null)}
+                className="text-[9px] text-slate-400 hover:text-white underline"
+              >
+                Dismiss
+              </button>
+            </div>
+            <div className="flex gap-3 text-[9px] font-bold uppercase tracking-widest">
+              <span className="text-emerald-400">{downloadReport.successCount} Stored</span>
+              {downloadReport.failedCount > 0 && <span className="text-rose-400">{downloadReport.failedCount} Failed</span>}
+            </div>
+            <div className="max-h-44 overflow-y-auto space-y-1.5 no-scrollbar pr-1">
+              {downloadReport.items.map((item, idx) => (
+                <div 
+                  key={idx} 
+                  className={`p-2 rounded-xl border text-[9px] ${
+                    item.status === 'success' 
+                      ? 'bg-emerald-950/30 border-emerald-500/20 text-emerald-300' 
+                      : item.status === 'fallback'
+                      ? 'bg-yellow-950/30 border-yellow-500/20 text-yellow-300'
+                      : 'bg-rose-950/30 border-rose-500/20 text-rose-300'
+                  }`}
+                >
+                  <div className="flex justify-between font-bold">
+                    <span>{item.gridRef} - {item.tileName}</span>
+                    <span className="uppercase text-[8px]">{item.status}</span>
+                  </div>
+                  {item.details && <p className="text-[8px] opacity-80 mt-1 leading-relaxed">{item.details}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="mt-6 bg-rose-600/20 border border-rose-600/20 p-4 rounded-2xl flex items-center gap-3">
@@ -3906,10 +4024,10 @@ const App: React.FC = () => {
                   />
                 )}
                 {Array.from(groupedDiscoveredTiles.entries()).map(([gridRef, tiles]) => {
-                  // Pick the best tile to represent the group (lowest resolution, highest phase)
+                  // Pick the best tile to represent the group (prioritizing highest phase, then resolution)
                   const bestTile = [...tiles].sort((a, b) => {
-                    if (a.resolution !== b.resolution) return a.resolution - b.resolution;
-                    return b.phase - a.phase;
+                    if (b.phase !== a.phase) return b.phase - a.phase;
+                    return a.resolution - b.resolution;
                   })[0];
                   
                   const isAnySelected = tiles.some(t => selectedTileIds.has(t.id));

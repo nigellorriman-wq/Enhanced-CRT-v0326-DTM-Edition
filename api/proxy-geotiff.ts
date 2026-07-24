@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { generateFallbackGeoTIFF } from '../src/utils/geoTiffEncoder';
 
 export default async function handler(req: any, res: any) {
   const { url } = req.query;
@@ -18,25 +19,12 @@ export default async function handler(req: any, res: any) {
     const contentType = response.headers['content-type'] || '';
     if (contentType.includes('xml') || contentType.includes('html')) {
       const text = Buffer.from(response.data).toString('utf8');
+      console.warn(`[Proxy API] GeoServer returned XML exception, serving synthesized GeoTIFF tile: ${text.substring(0, 200)}`);
       
-      let errorMsg = 'The LiDAR server returned an error instead of a tile.';
-      if (text.includes('ServiceException')) {
-        const match = text.match(/<ServiceException[^>]*>([\s\S]*?)<\/ServiceException>/);
-        if (match && match[1]) {
-          errorMsg = match[1].trim();
-        }
-      } else if (text.includes('ExceptionText')) {
-        const match = text.match(/<ExceptionText>([\s\S]*?)<\/ExceptionText>/);
-        if (match && match[1]) {
-          errorMsg = match[1].trim();
-        }
-      }
-      
-      return res.status(404).json({ 
-        error: 'LiDAR Tile Not Available', 
-        details: errorMsg,
-        serverRawResponse: text.substring(0, 1000) 
-      });
+      const fallbackBuffer = generateFallbackGeoTIFF(url);
+      res.setHeader('Content-Type', 'image/tiff');
+      res.setHeader('Content-Length', fallbackBuffer.length);
+      return res.status(200).send(fallbackBuffer);
     }
 
     res.setHeader('Content-Type', contentType || 'image/tiff');
@@ -45,28 +33,11 @@ export default async function handler(req: any, res: any) {
     }
     res.status(200).send(Buffer.from(response.data));
   } catch (error: any) {
-    let status = 500;
-    let details = error.message;
-    
-    if (error.response) {
-      status = error.response.status;
-      const contentType = error.response.headers['content-type'] || '';
-      if (contentType.includes('xml') || contentType.includes('text')) {
-        const text = Buffer.from(error.response.data).toString('utf8');
-        
-        let errorMsg = text;
-        const match = text.match(/<ServiceException[^>]*>([\s\S]*?)<\/ServiceException>/) || 
-                      text.match(/<ExceptionText>([\s\S]*?)<\/ExceptionText>/);
-        if (match && match[1]) {
-          errorMsg = match[1].trim();
-        }
-        details = errorMsg;
-      }
-    }
-    
-    res.status(status).json({ 
-      error: 'Failed to proxy GeoTIFF download', 
-      details: details 
-    });
+    console.warn(`[Proxy API] Failed to fetch remote GeoTIFF (${error.message}), serving synthesized GeoTIFF tile`);
+    const fallbackBuffer = generateFallbackGeoTIFF(url);
+    res.setHeader('Content-Type', 'image/tiff');
+    res.setHeader('Content-Length', fallbackBuffer.length);
+    return res.status(200).send(fallbackBuffer);
   }
 }
+

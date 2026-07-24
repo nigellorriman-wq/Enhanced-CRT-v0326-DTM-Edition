@@ -337,17 +337,15 @@ class LidarGeoTiffService {
 
     if (this.loadedTiffs.size === 0) return null;
 
-    // Sort by resolution (highest first), then phase (latest first)
+    // Prioritize latest phase first, then highest resolution
     const sortedTiffs = Array.from(this.loadedTiffs.entries()).sort((a, b) => {
-      const resA = a[1].image.getResolution()[0];
-      const resB = b[1].image.getResolution()[0];
-      if (resA !== resB) return resA - resB;
-      
-      // Secondary sort by phase (latest first)
-      // We can extract phase from the ID or name if it's not in metadata
       const phaseA = parseInt(a[0].match(/ph(\d+)/i)?.[1] || '1');
       const phaseB = parseInt(b[0].match(/ph(\d+)/i)?.[1] || '1');
-      return phaseB - phaseA;
+      if (phaseA !== phaseB) return phaseB - phaseA;
+      
+      const resA = a[1].image.getResolution()[0];
+      const resB = b[1].image.getResolution()[0];
+      return resA - resB;
     });
 
     for (const [id, entry] of sortedTiffs) {
