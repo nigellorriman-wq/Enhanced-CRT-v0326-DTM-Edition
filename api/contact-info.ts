@@ -84,17 +84,33 @@ Return ONLY a JSON object with: website (full URL), phone, full_address, postcod
     const parsed = JSON.parse(responseText.trim());
     res.status(200).json(parsed);
   } catch (error: any) {
-    console.warn('[Contact Info API] Handled error:', error.message);
-    const isQuota = error.status === 429 || error.message?.includes('429') || error.message?.includes('quota') || error.message?.includes('RESOURCE_EXHAUSTED');
+    let rawStr = typeof error?.message === 'string' ? error.message : JSON.stringify(error || '');
+    let extractedMessage = rawStr;
+    try {
+      const parsedObj = JSON.parse(rawStr);
+      if (parsedObj?.error?.message) {
+        extractedMessage = parsedObj.error.message;
+      }
+    } catch (_) {}
+
+    const isQuota = error?.status === 429 || rawStr.includes('429') || rawStr.includes('quota') || rawStr.includes('RESOURCE_EXHAUSTED');
+    const isKeyError = error?.status === 403 || rawStr.includes('403') || rawStr.includes('leaked') || rawStr.includes('PERMISSION_DENIED') || rawStr.includes('API key');
+
+    let userMsg = extractedMessage;
+    if (isKeyError) {
+      userMsg = "Gemini API key is invalid or restricted. Please update your API key in Settings.";
+    } else if (isQuota) {
+      userMsg = "Contact info lookup temporarily rate-limited. Please try again in a moment.";
+    }
+
+    console.warn('[Contact Info API] Handled request issue:', userMsg);
     res.status(200).json({
       website: "",
       phone: "",
       full_address: "",
       postcode: "",
       verified_match: false,
-      error: isQuota 
-        ? "Contact info lookup temporarily rate-limited (quota limit). Please try again in a moment." 
-        : (error.message || "Failed to retrieve contact info")
+      error: userMsg
     });
   }
 }

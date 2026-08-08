@@ -425,12 +425,9 @@ async function startServer() {
       const contentType = response.headers['content-type'] || '';
       if (contentType.includes('xml') || contentType.includes('html')) {
         const text = Buffer.from(response.data).toString('utf8');
-        console.warn(`[Proxy API] GeoServer returned XML exception, serving synthesized GeoTIFF tile:`, text.substring(0, 200));
-        
-        const fallbackBuffer = generateFallbackGeoTIFF(url);
-        res.set('Content-Type', 'image/tiff');
-        res.set('Content-Length', String(fallbackBuffer.length));
-        return res.send(fallbackBuffer);
+        console.warn(`[Proxy API] GeoServer returned XML exception:`, text.substring(0, 200));
+        res.set('Content-Type', 'text/xml');
+        return res.status(502).send(text);
       }
 
       res.set('Content-Type', contentType || 'image/tiff');
@@ -440,11 +437,8 @@ async function startServer() {
       res.send(response.data);
     } catch (error: any) {
       const urlStr = req.query.url as string || '';
-      console.warn(`[Proxy API] Error fetching ${urlStr} (${error.message}), serving synthesized GeoTIFF tile`);
-      const fallbackBuffer = generateFallbackGeoTIFF(urlStr);
-      res.set('Content-Type', 'image/tiff');
-      res.set('Content-Length', String(fallbackBuffer.length));
-      return res.send(fallbackBuffer);
+      console.warn(`[Proxy API] Error fetching ${urlStr} (${error.message})`);
+      res.status(502).json({ error: 'Failed to fetch GeoTIFF', details: error.message });
     }
   });
 
@@ -576,17 +570,33 @@ Return ONLY a JSON object with: website (full URL), phone, full_address, postcod
       const parsed = JSON.parse(responseText.trim());
       res.json(parsed);
     } catch (error: any) {
-      console.warn('[Contact Info API] Handled error:', error.message);
-      const isQuota = error.status === 429 || error.message?.includes('429') || error.message?.includes('quota') || error.message?.includes('RESOURCE_EXHAUSTED');
+      let rawStr = typeof error?.message === 'string' ? error.message : JSON.stringify(error || '');
+      let extractedMessage = rawStr;
+      try {
+        const parsedObj = JSON.parse(rawStr);
+        if (parsedObj?.error?.message) {
+          extractedMessage = parsedObj.error.message;
+        }
+      } catch (_) {}
+
+      const isQuota = error?.status === 429 || rawStr.includes('429') || rawStr.includes('quota') || rawStr.includes('RESOURCE_EXHAUSTED');
+      const isKeyError = error?.status === 403 || rawStr.includes('403') || rawStr.includes('leaked') || rawStr.includes('PERMISSION_DENIED') || rawStr.includes('API key');
+
+      let userMsg = extractedMessage;
+      if (isKeyError) {
+        userMsg = "Gemini API key is invalid or restricted. Please update your API key in Settings.";
+      } else if (isQuota) {
+        userMsg = "Contact info lookup temporarily rate-limited. Please try again in a moment.";
+      }
+
+      console.warn('[Contact Info API] Handled request issue:', userMsg);
       res.status(200).json({
         website: "",
         phone: "",
         full_address: "",
         postcode: "",
         verified_match: false,
-        error: isQuota 
-          ? "Contact info lookup temporarily rate-limited (quota limit). Please try again in a moment." 
-          : (error.message || "Failed to retrieve contact info")
+        error: userMsg
       });
     }
   });

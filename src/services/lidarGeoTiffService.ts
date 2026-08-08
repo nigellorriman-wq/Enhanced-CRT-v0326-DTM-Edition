@@ -357,15 +357,14 @@ class LidarGeoTiffService {
       
       // Check if point is within bounds (in BNG)
       if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
-        // Convert BNG to pixel coordinates
+        // Convert BNG to pixel coordinates safely from bounding box and dimensions
         const width = image.getWidth();
         const height = image.getHeight();
-        const res = image.getResolution();
-        const origin = image.getOrigin();
+        const resX = (maxX - minX) / width;
+        const resY = (maxY - minY) / height;
 
-        // Standard GeoTIFF mapping: x = (e - originX) / resX, y = (originY - n) / abs(resY)
-        const x = Math.floor((e - origin[0]) / res[0]);
-        const y = Math.floor((origin[1] - n) / Math.abs(res[1]));
+        const x = Math.min(width - 1, Math.max(0, Math.floor((e - minX) / resX)));
+        const y = Math.min(height - 1, Math.max(0, Math.floor((maxY - n) / resY)));
 
         if (x >= 0 && x < width && y >= 0 && y < height) {
           try {

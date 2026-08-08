@@ -2842,63 +2842,54 @@ const App: React.FC = () => {
   const viewRef = useRef<AppView>(view);
   useEffect(() => { viewRef.current = view; }, [view]);
 
-  // Automatically activate GeoTIFF overlays in LiDAR DTM mode and sync color range
-  const loadingOverlays = useRef<Set<string>>(new Set());
-  const prevMapStyle = useRef(mapStyle);
+  // Automatically activate GeoTIFF overlays for all downloaded tiles and sync color range
   useEffect(() => {
     const syncOverlays = async () => {
-      if (mapStyle === 'LiDAR DTM') {
-        if (offlineGeoTiffs.length === 0) {
-          console.log('[LiDAR] No offline GeoTIFFs, clearing overlays');
-          setActiveGeoTiffOverlays({});
-          lidarGeoTiffService.clearGlobalAltitudeRange();
-          return;
-        }
-
-        console.log(`[LiDAR] Map style is LiDAR DTM, syncing ${offlineGeoTiffs.length} offline overlays`);
-        
-        // 1. Calculate global range for all offline tiles to ensure consistent color rendering
-        let globalMin = Infinity;
-        let globalMax = -Infinity;
-        let found = false;
-        
-        for (const tiff of offlineGeoTiffs) {
-          const stats = await lidarGeoTiffService.getMinMax(tiff.id);
-          if (stats) {
-            globalMin = Math.min(globalMin, stats.min);
-            globalMax = Math.max(globalMax, stats.max);
-            found = true;
-          }
-        }
-        
-        if (found) {
-          lidarGeoTiffService.setGlobalAltitudeRange(globalMin, globalMax);
-        } else {
-          lidarGeoTiffService.clearGlobalAltitudeRange();
-        }
-
-        // 2. Generate/Update overlays for all offline tiles
-        const newOverlays: Record<string, any> = {};
-        for (const tiff of offlineGeoTiffs) {
-          try {
-            const overlay = await lidarGeoTiffService.generateOverlay(tiff.id);
-            if (overlay) {
-              newOverlays[tiff.id] = overlay;
-            }
-          } catch (err) {
-            console.error(`[LiDAR] Failed to generate overlay for ${tiff.id}`, err);
-          }
-        }
-        setActiveGeoTiffOverlays(newOverlays);
-      } else if (prevMapStyle.current === 'LiDAR DTM') {
-        // Deactivate overlays ONLY if we just switched away from LiDAR DTM
+      if (offlineGeoTiffs.length === 0) {
+        console.log('[LiDAR] No offline GeoTIFFs, clearing overlays');
         setActiveGeoTiffOverlays({});
-        loadingOverlays.current.clear();
+        lidarGeoTiffService.clearGlobalAltitudeRange();
+        return;
       }
-      prevMapStyle.current = mapStyle;
+
+      console.log(`[LiDAR] Syncing ${offlineGeoTiffs.length} offline GeoTIFF overlays`);
+      
+      // 1. Calculate global range for all offline tiles to ensure consistent color rendering
+      let globalMin = Infinity;
+      let globalMax = -Infinity;
+      let found = false;
+      
+      for (const tiff of offlineGeoTiffs) {
+        const stats = await lidarGeoTiffService.getMinMax(tiff.id);
+        if (stats) {
+          globalMin = Math.min(globalMin, stats.min);
+          globalMax = Math.max(globalMax, stats.max);
+          found = true;
+        }
+      }
+      
+      if (found) {
+        lidarGeoTiffService.setGlobalAltitudeRange(globalMin, globalMax);
+      } else {
+        lidarGeoTiffService.clearGlobalAltitudeRange();
+      }
+
+      // 2. Generate/Update overlays for all offline tiles
+      const newOverlays: Record<string, any> = {};
+      for (const tiff of offlineGeoTiffs) {
+        try {
+          const overlay = await lidarGeoTiffService.generateOverlay(tiff.id);
+          if (overlay) {
+            newOverlays[tiff.id] = overlay;
+          }
+        } catch (err) {
+          console.error(`[LiDAR] Failed to generate overlay for ${tiff.id}`, err);
+        }
+      }
+      setActiveGeoTiffOverlays(newOverlays);
     };
     syncOverlays();
-  }, [mapStyle, offlineGeoTiffs]);
+  }, [offlineGeoTiffs]);
 
   const handleToggleTileSelection = (tileId: string) => {
     setSelectedTileIds(prev => {

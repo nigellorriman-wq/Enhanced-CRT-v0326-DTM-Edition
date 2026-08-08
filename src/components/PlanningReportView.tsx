@@ -165,12 +165,6 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       return elevationCache.current.get(preciseKey) ?? null;
     }
 
-    // Coarse-grained grid check (approx. 110mx110m cells) to quickly bypass massive dead zones/coverage gaps
-    const coarseKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
-    if (deadZoneCache.current.has(coarseKey)) {
-      return null;
-    }
-
     // 1. Check offline GeoTIFF data first (highest priority)
     try {
       const offlineElev = await lidarGeoTiffService.getElevation(lat, lng);
@@ -182,19 +176,10 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       console.error('[LiDAR] Failed to read elevation from GeoTIFF in report', e);
     }
 
-    // If the coordinates lie inside some downloaded GeoTIFF's bounding box,
-    // and the high-priority offline check above was null (meaning NoData/gap inside the tile),
-    // then the online system will also haveNoData-gap. Do not hit the online WMS API.
-    if (lidarGeoTiffService.isAreaDownloaded(lat, lng)) {
-      elevationCache.current.set(preciseKey, null);
-      deadZoneCache.current.add(coarseKey);
-      return null;
-    }
-
-    // 2. Fallback to Online API with a strict 3-second timeout protection
+    // 2. Fallback to Online API with 8-second timeout protection
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
 
       const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`, {
         signal: controller.signal
@@ -204,7 +189,6 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       const contentType = response.headers.get('content-type');
       if (!response.ok || !contentType || !contentType.includes('application/json')) {
         elevationCache.current.set(preciseKey, null);
-        deadZoneCache.current.add(coarseKey);
         return null;
       }
       const data = await response.json();
@@ -224,117 +208,189 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       }
 
       elevationCache.current.set(preciseKey, elevation);
-      if (elevation === null) {
-        deadZoneCache.current.add(coarseKey);
-      }
       return elevation;
     } catch (e) {
       elevationCache.current.set(preciseKey, null);
-      deadZoneCache.current.add(coarseKey);
       return null;
     }
   };
 
   const generateProfile = async (record: SavedRecord) => {
-    if (profiles[record.id]) {
+    if (profilesRef.current[record.id]) {
       setIsTiffReady(true);
       return;
     }
 
     setIsLoadingLidar(true);
-    
-    // Ensure GeoTIFFs are loaded into memory for fast lookup
-    await lidarGeoTiffService.loadAll();
-    setIsTiffReady(true);
-    
-    const getAnchors = (forScratch: boolean): GeoPoint[] => {
-      const startPoint = record.raterPathPoints?.[0] || record.points[0];
-      const endPoint = record.raterPathPoints?.[record.raterPathPoints.length - 1] || record.points[record.points.length - 1];
-      const sortedPivots = [...(record.pivotPoints || [])].sort((a, b) => a.point.timestamp - b.point.timestamp);
+    try {
+      // Ensure GeoTIFFs are loaded into memory for fast lookup
+      await lidarGeoTiffService.loadAll();
+      setIsTiffReady(true);
       
-      let anchors: GeoPoint[] = [startPoint];
-      for (const pivot of sortedPivots) {
-        if (forScratch) {
-          if (pivot.type === 'common' || pivot.type === 'scratch_cut') anchors.push(pivot.point);
-        } else { 
-          if (pivot.type === 'common' || pivot.type === 'bogoy_round') anchors.push(pivot.point);
-        }
-      }
-      anchors.push(endPoint);
-      return anchors;
-    };
+      const getAnchors = (forScratch: boolean): GeoPoint[] => {
+        const startPoint = record.raterPathPoints?.[0] || record.points?.[0];
+        const endPoint = record.raterPathPoints?.[record.raterPathPoints.length - 1] || record.points?.[record.points?.length - 1];
+        if (!startPoint || !endPoint) return [];
 
-    const processAnchors = async (anchors: GeoPoint[]): Promise<ProfilePoint[]> => {
-      const result: ProfilePoint[] = [];
-      let totalDistMetres = 0;
-      
-      // Try to find a valid starting altitude for the baseline
-      let startAlt = anchors[0].alt || (await fetchLidar(anchors[0].lat, anchors[0].lng));
-      if (startAlt === null) {
-        // Search anchors for any valid altitude to use as baseline
-        for (const a of anchors) {
-          const alt = a.alt || (await fetchLidar(a.lat, a.lng));
-          if (alt !== null) {
-            startAlt = alt;
-            break;
+        const sortedPivots = [...(record.pivotPoints || [])].sort((a, b) => a.point.timestamp - b.point.timestamp);
+        
+        let anchors: GeoPoint[] = [startPoint];
+        for (const pivot of sortedPivots) {
+          if (forScratch) {
+            if (pivot.type === 'common' || pivot.type === 'scratch_cut') anchors.push(pivot.point);
+          } else { 
+            if (pivot.type === 'common' || pivot.type === 'bogoy_round') anchors.push(pivot.point);
           }
         }
-      }
-      const baselineAlt = startAlt !== null ? startAlt : 0;
-      let lastKnownAlt = baselineAlt;
+        anchors.push(endPoint);
+        return anchors;
+      };
 
-      for (let i = 0; i < anchors.length - 1; i++) {
-        const p1 = anchors[i];
-        const p2 = anchors[i+1];
-        const segmentDist = calculateDistance(p1, p2);
+      const processAnchors = async (anchors: GeoPoint[]): Promise<ProfilePoint[]> => {
+        if (anchors.length < 2) return [];
+        const result: ProfilePoint[] = [];
+        let totalDistMetres = 0;
         
-        // Determine interval based on GeoTIFF availability and resolution
-        // Use 1m only if we have a 1m tile AND it actually contains data for this point
-        const bestRes = lidarGeoTiffService.getBestResolution(p1.lat, p1.lng);
-        const hasOfflineData = (await lidarGeoTiffService.getElevation(p1.lat, p1.lng)) !== null;
-        const interval = (hasOfflineData && bestRes !== null && bestRes <= 1) ? 1 : 5;
-        
-        const numSteps = Math.max(1, Math.floor(segmentDist / interval));
+        // Try to find a valid starting altitude for the baseline (prioritize LiDAR over GPS)
+        let startAlt = (await fetchLidar(anchors[0].lat, anchors[0].lng)) ?? (anchors[0].alt && anchors[0].alt !== 0 ? anchors[0].alt : null);
+        if (startAlt === null) {
+          // Search anchors for any valid altitude to use as baseline
+          for (const a of anchors) {
+            const alt = (await fetchLidar(a.lat, a.lng)) ?? (a.alt && a.alt !== 0 ? a.alt : null);
+            if (alt !== null) {
+              startAlt = alt;
+              break;
+            }
+          }
+        }
+        const baselineAlt = startAlt !== null ? startAlt : 0;
 
-        for (let step = 0; step <= numSteps; step++) {
-          const t = step / numSteps;
-          const lat = p1.lat + (p2.lat - p1.lat) * t;
-          const lng = p1.lng + (p2.lng - p1.lng) * t;
-          const stepDistMetres = totalDistMetres + (segmentDist * t);
+        for (let i = 0; i < anchors.length - 1; i++) {
+          const p1 = anchors[i];
+          const p2 = anchors[i + 1];
+          const segmentDist = calculateDistance(p1, p2);
+          if (segmentDist <= 0) continue;
           
-          const alt = await fetchLidar(lat, lng);
-          let currentAlt: number | null = null;
-          if (alt !== null) {
-            currentAlt = alt;
-            lastKnownAlt = alt;
-          } else if (step === 0 && p1.alt) {
-            currentAlt = p1.alt;
-            lastKnownAlt = p1.alt;
-          } else {
-            currentAlt = null;
+          // Determine interval based on GeoTIFF availability and resolution
+          const bestRes = lidarGeoTiffService.getBestResolution(p1.lat, p1.lng);
+          const hasOfflineData = (await lidarGeoTiffService.getElevation(p1.lat, p1.lng)) !== null;
+          const interval = (hasOfflineData && bestRes !== null && bestRes <= 1) ? 1 : 5;
+          
+          const numSteps = Math.max(1, Math.floor(segmentDist / interval));
+
+          // Build array of steps
+          const stepsData: Array<{
+            step: number;
+            t: number;
+            lat: number;
+            lng: number;
+            stepDistMetres: number;
+            alt: number | null;
+          }> = [];
+
+          for (let step = 0; step <= numSteps; step++) {
+            const t = step / numSteps;
+            const lat = p1.lat + (p2.lat - p1.lat) * t;
+            const lng = p1.lng + (p2.lng - p1.lng) * t;
+            const stepDistMetres = totalDistMetres + (segmentDist * t);
+            stepsData.push({ step, t, lat, lng, stepDistMetres, alt: null });
           }
 
-          result.push({
-            distance: stepDistMetres * 1.09361, // Yards for X-axis display
-            distanceMetres: stepDistMetres,
-            elevationDiff: currentAlt !== null ? (currentAlt - baselineAlt) * 3.28084 : null, // Feet
-            elevationDiffMetres: currentAlt !== null ? currentAlt - baselineAlt : null,
-            absoluteAltitude: currentAlt !== null ? currentAlt * 3.28084 : null, // Feet
-            absoluteAltitudeMetres: currentAlt !== null ? currentAlt : null,
-            isPivot: step === 0 || (i === anchors.length - 2 && step === numSteps)
-          });
+          // Fetch LiDAR elevations in parallel batches of 8
+          const BATCH_SIZE = 8;
+          for (let b = 0; b < stepsData.length; b += BATCH_SIZE) {
+            const batch = stepsData.slice(b, b + BATCH_SIZE);
+            await Promise.all(batch.map(async item => {
+              item.alt = await fetchLidar(item.lat, item.lng);
+            }));
+          }
+
+          // Interpolate missing intermediate elevations using nearest valid LiDAR neighbors
+          for (let j = 0; j < stepsData.length; j++) {
+            if (stepsData[j].alt === null) {
+              let prevValid: number | null = null;
+              let prevDist = 0;
+              for (let k = j - 1; k >= 0; k--) {
+                if (stepsData[k].alt !== null) {
+                  prevValid = stepsData[k].alt;
+                  prevDist = stepsData[k].stepDistMetres;
+                  break;
+                }
+              }
+              if (prevValid === null && j === 0) {
+                prevValid = (p1.alt && p1.alt !== 0) ? p1.alt : baselineAlt;
+                prevDist = stepsData[0].stepDistMetres;
+              }
+
+              let nextValid: number | null = null;
+              let nextDist = 0;
+              for (let k = j + 1; k < stepsData.length; k++) {
+                if (stepsData[k].alt !== null) {
+                  nextValid = stepsData[k].alt;
+                  nextDist = stepsData[k].stepDistMetres;
+                  break;
+                }
+              }
+              if (nextValid === null) {
+                nextValid = (p2.alt && p2.alt !== 0) ? p2.alt : (prevValid ?? baselineAlt);
+                nextDist = stepsData[stepsData.length - 1].stepDistMetres;
+              }
+
+              if (prevValid !== null && nextValid !== null && nextDist > prevDist) {
+                const fraction = (stepsData[j].stepDistMetres - prevDist) / (nextDist - prevDist);
+                stepsData[j].alt = prevValid + (nextValid - prevValid) * fraction;
+              } else if (prevValid !== null) {
+                stepsData[j].alt = prevValid;
+              } else if (nextValid !== null) {
+                stepsData[j].alt = nextValid;
+              } else {
+                stepsData[j].alt = baselineAlt;
+              }
+            }
+          }
+
+          // Build ProfilePoints
+          for (const item of stepsData) {
+            const currentAlt = item.alt ?? baselineAlt;
+            result.push({
+              distance: item.stepDistMetres * 1.09361, // Yards for X-axis display
+              distanceMetres: item.stepDistMetres,
+              elevationDiff: (currentAlt - baselineAlt) * 3.28084, // Feet
+              elevationDiffMetres: currentAlt - baselineAlt,
+              absoluteAltitude: currentAlt * 3.28084, // Feet
+              absoluteAltitudeMetres: currentAlt,
+              isPivot: item.step === 0 || (i === anchors.length - 2 && item.step === numSteps)
+            });
+          }
+
+          totalDistMetres += segmentDist;
         }
-        totalDistMetres += segmentDist;
-      }
-      return result;
-    };
+        return result;
+      };
 
-    const scratchProfile = await processAnchors(getAnchors(true));
-    const bogeyProfile = await processAnchors(getAnchors(false));
+      const scratchProfile = await processAnchors(getAnchors(true));
+      const bogeyProfile = await processAnchors(getAnchors(false));
 
-    setProfiles(prev => ({ ...prev, [record.id]: { scratch: scratchProfile, bogey: bogeyProfile } }));
-    setIsLoadingLidar(false);
+      setProfiles(prev => ({ ...prev, [record.id]: { scratch: scratchProfile, bogey: bogeyProfile } }));
+    } catch (e) {
+      console.error('[PlanningReport] Error generating profile for track', record.id, e);
+    } finally {
+      setIsLoadingLidar(false);
+    }
   };
+
+  useEffect(() => {
+    if (tracks.length > 0) {
+      const generateAllProfiles = async () => {
+        for (const track of tracks) {
+          if (!profilesRef.current[track.id]) {
+            await generateProfile(track);
+          }
+        }
+      };
+      generateAllProfiles();
+    }
+  }, [tracks]);
 
   useEffect(() => {
     if (currentTrack && !isSummaryPage) {
@@ -351,16 +407,30 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       setCurrentIndex(i);
       
       if (i < tracks.length) {
-        // Wait for profile to be generated for this specific track AND for loading to finish
+        const track = tracks[i];
+        if (!profilesRef.current[track.id]) {
+          await generateProfile(track);
+        }
+        
+        // Wait for profile to be generated for this specific track AND for loading indicator to finish
         let attempts = 0;
-        while ((!profilesRef.current[tracks[i].id] || isLoadingLidarRef.current) && attempts < 300) {
-          await new Promise(resolve => setTimeout(resolve, 200));
+        while ((!profilesRef.current[track.id] || isLoadingLidarRef.current) && attempts < 300) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
+        }
+      } else {
+        // Summary page: wait for all tracks to be processed and wind loading to finish
+        let attempts = 0;
+        while ((isLoadingLidarRef.current || loadingWind) && attempts < 150) {
+          await new Promise(resolve => setTimeout(resolve, 100));
           attempts++;
         }
       }
       
-      // Extra wait for Recharts or Leaflet to render
-      const waitTime = i === tracks.length ? 3000 : 1500;
+      // Wait for React DOM updates to flush (clearing any overlays) and Recharts/Leaflet to finish rendering
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const waitTime = i === tracks.length ? 2500 : 1500;
       await new Promise(resolve => setTimeout(resolve, waitTime));
       
       if (reportRef.current) {
@@ -549,20 +619,22 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                 dataKey={yLeftKey} 
                 stroke={color} 
                 fill={color} 
-                fillOpacity={0.1} 
+                fillOpacity={0.2} 
                 strokeWidth={2}
                 dot={false}
-                connectNulls={false}
+                connectNulls={true}
               />
               
               <Line
                 yAxisId="right"
                 type="monotone"
                 dataKey={yRightKey}
-                stroke="none"
+                stroke={color}
+                strokeWidth={1}
+                strokeDasharray="2 2"
                 dot={false}
                 activeDot={false}
-                connectNulls={false}
+                connectNulls={true}
               />
             </ComposedChart>
           </ResponsiveContainer>
@@ -724,7 +796,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           className="bg-white w-full max-w-[210mm] shadow-2xl flex flex-col p-8 border border-slate-200 relative"
           style={{ minHeight: '297mm' }}
         >
-          {isLoadingLidar && (
+          {isLoadingLidar && !isExporting && (
             <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
               <Loader2 className="animate-spin text-amber-600 mb-4" size={48} />
               <p className="text-slate-900 font-bold uppercase tracking-widest text-sm">Fetching LiDAR Terrain Data...</p>
