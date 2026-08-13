@@ -46,7 +46,9 @@ import {
   MousePointer2,
   Maximize2,
   Sliders,
-  Tag
+  Tag,
+  Calculator,
+  ArrowLeft
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -135,7 +137,7 @@ const SelectionHandler = ({ active, onSelectionComplete }: { active: boolean, on
 
 /** --- TYPES --- **/
 // Fix: Renamed View to AppView to resolve "Cannot find name 'AppView'" errors on lines 839 and 1069
-export type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs' | 'planning' | 'planning_report' | 'course_browser';
+export type AppView = 'landing' | 'track' | 'green' | 'manual' | 'stimp' | 'report' | 'wcs' | 'planning' | 'planning_report' | 'course_browser' | 'manualEgd';
 export type UnitSystem = 'Yards' | 'Metres';
 export type FontSize = 'small' | 'medium' | 'large';
 export type RatingGender = 'Men' | 'Women'; 
@@ -1389,6 +1391,379 @@ const StimpCalculator: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+};
+
+const ManualEgdCalculator: React.FC<{ onClose: () => void; units: UnitSystem }> = ({ onClose, units: initialUnits }) => {
+  const [currUnits, setCurrUnits] = useState<UnitSystem>(initialUnits);
+  const [isInconsistent, setIsInconsistent] = useState<boolean>(false);
+  const [isTwoPortions, setIsTwoPortions] = useState<boolean>(false);
+  const [isTiered, setIsTiered] = useState<boolean>(false);
+
+  // Single / Standard Green Dims
+  const [length, setLength] = useState<number>(30);
+  const [width, setWidth] = useState<number>(20);
+
+  // Inconsistent Widths
+  const [useThirdWidth, setUseThirdWidth] = useState<boolean>(true);
+  const [w1, setW1] = useState<number>(18);
+  const [w2, setW2] = useState<number>(20);
+  const [w3, setW3] = useState<number>(22);
+
+  // Two Portions Dims
+  const [p1Length, setP1Length] = useState<number>(25);
+  const [p1Width, setP1Width] = useState<number>(15);
+  const [p2Length, setP2Length] = useState<number>(20);
+  const [p2Width, setP2Width] = useState<number>(12);
+
+  const uLabel = currUnits === 'Yards' ? 'YD' : 'M';
+
+  const adjust = (val: number, set: (v: number) => void, delta: number, min: number = 0) => {
+    const next = Math.max(min, Math.round((val + delta) * 10) / 10);
+    set(next);
+  };
+
+  const calcEgdForDims = (L: number, W: number) => {
+    if (L <= 0 || W <= 0) return { egd: 0, formula: 'Invalid dimensions', ratio: 0 };
+    const ratio = L / W;
+    if (ratio >= 3) {
+      return { egd: (3 * W + L) / 4, formula: 'One dimension 3x other (3W + L) / 4', ratio };
+    } else if (ratio >= 2) {
+      return { egd: (2 * W + L) / 3, formula: 'One dimension 2x other (2W + L) / 3', ratio };
+    } else {
+      return { egd: (L + W) / 2, formula: 'Standard Average (L + W) / 2', ratio };
+    }
+  };
+
+  // Compute live results
+  let mainEgdDisplay = '--';
+  let formulaDisplay = '';
+  let subBreakdown = null;
+
+  if (isTwoPortions) {
+    const res1 = calcEgdForDims(p1Length, p1Width);
+    const res2 = calcEgdForDims(p2Length, p2Width);
+    const egd1 = Math.round(res1.egd);
+    const egd2 = Math.round(res2.egd);
+    mainEgdDisplay = `${egd1} / ${egd2} ${uLabel}`;
+    formulaDisplay = `Two Portions (Section 13D): Portion 1 = ${egd1} ${uLabel}, Portion 2 = ${egd2} ${uLabel}`;
+    subBreakdown = (
+      <div className="space-y-2 text-xs text-white">
+        <p className="font-semibold text-emerald-300">Portion 1: {p1Length} {uLabel} L × {p1Width} {uLabel} W → Ratio {res1.ratio.toFixed(2)}:1 ({res1.formula}) [Calculated: {res1.egd.toFixed(1)} {uLabel}]</p>
+        <p className="font-semibold text-fuchsia-300">Portion 2: {p2Length} {uLabel} L × {p2Width} {uLabel} W → Ratio {res2.ratio.toFixed(2)}:1 ({res2.formula}) [Calculated: {res2.egd.toFixed(1)} {uLabel}]</p>
+      </div>
+    );
+  } else if (isInconsistent) {
+    const avgW = useThirdWidth ? (w1 + w2 + w3) / 3 : (w1 + w2) / 2;
+    const ratio = avgW > 0 ? length / avgW : 0;
+    let egd = 0;
+    let formula = '';
+    if (ratio >= 3) {
+      egd = (3 * avgW + length) / 4;
+      formula = 'Inconsistent Widths: 3x Avg Width (3W_avg + L) / 4';
+    } else if (ratio >= 2) {
+      egd = (2 * avgW + length) / 3;
+      formula = 'Inconsistent Widths: 2x Avg Width (2W_avg + L) / 3';
+    } else {
+      egd = (length + avgW) / 2;
+      formula = 'Inconsistent Widths: Standard Average (L + W_avg) / 2';
+    }
+    const egdRound = Math.round(egd);
+    mainEgdDisplay = `${egdRound} ${uLabel}`;
+    formulaDisplay = formula;
+    subBreakdown = (
+      <div className="space-y-1 text-xs text-white">
+        <p>Widths: W1={w1} {uLabel}, W2={w2} {uLabel}{useThirdWidth ? `, W3=${w3} ${uLabel}` : ''} → <strong className="text-white">Avg Width = {avgW.toFixed(1)} {uLabel}</strong></p>
+        <p>Length: {length} {uLabel} | Length / Avg Width Ratio = <strong className="text-amber-300">{ratio.toFixed(2)}:1</strong> | Calculated EGD: <strong className="text-white">{egd.toFixed(1)} {uLabel}</strong></p>
+      </div>
+    );
+  } else {
+    const res = calcEgdForDims(length, width);
+    const egdRound = Math.round(res.egd);
+    mainEgdDisplay = `${egdRound} ${uLabel}`;
+    formulaDisplay = res.formula;
+    subBreakdown = (
+      <div className="space-y-1 text-xs text-white">
+        <p>Length: {length} {uLabel} | Width: {width} {uLabel}</p>
+        <p>Length / Width Ratio = <strong className="text-amber-300">{res.ratio.toFixed(2)}:1</strong> | Calculated EGD: <strong className="text-white">{res.egd.toFixed(1)} {uLabel}</strong></p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full w-full bg-[#020617] text-white overflow-y-auto p-4 sm:p-6 max-w-2xl mx-auto font-sans animate-in fade-in duration-200">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-6">
+        <button
+          onClick={onClose}
+          className="flex items-center gap-2 text-white hover:text-white transition-colors bg-slate-900 border border-white/10 px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider active:scale-95"
+        >
+          <ArrowLeft size={16} /> Back
+        </button>
+        <div className="text-center">
+          <h1 className="text-lg font-black uppercase text-emerald-400 tracking-wider">Manual EGD</h1>
+          <p className="text-[10px] text-white font-medium">Effective Green Diameter Calculator</p>
+        </div>
+        <button
+          onClick={() => setCurrUnits(u => u === 'Yards' ? 'Metres' : 'Yards')}
+          className="bg-slate-800 border border-emerald-500/30 text-emerald-400 px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest active:scale-95"
+        >
+          {currUnits}
+        </button>
+      </div>
+
+      {/* Special Shape Selectors */}
+      <div className="bg-slate-900/80 border border-white/10 rounded-2xl p-4 mb-6 space-y-3 shadow-xl">
+        <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400 block mb-1">Green Shape Options</span>
+        
+        <label className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${isInconsistent ? 'bg-emerald-950/40 border-emerald-500 text-white' : 'bg-slate-800/40 border-white/5 text-white hover:bg-slate-800'}`}>
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={isInconsistent}
+              onChange={(e) => {
+                setIsInconsistent(e.target.checked);
+                if (e.target.checked) setIsTwoPortions(false);
+              }}
+              className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+            />
+            <div>
+              <span className="text-xs font-bold block">One dimension not consistent</span>
+              <span className="text-[10px] text-white block mt-0.5">Measures 2 or 3 width samples across green to average variations</span>
+            </div>
+          </div>
+        </label>
+
+        <label className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${isTwoPortions ? 'bg-emerald-950/40 border-emerald-500 text-white' : 'bg-slate-800/40 border-white/5 text-white hover:bg-slate-800'}`}>
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={isTwoPortions}
+              onChange={(e) => {
+                setIsTwoPortions(e.target.checked);
+                if (e.target.checked) setIsInconsistent(false);
+              }}
+              className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+            />
+            <div>
+              <span className="text-xs font-bold block">Two portions (L-shaped or dual section)</span>
+              <span className="text-[10px] text-white block mt-0.5">Calculates EGD separately for Portion 1 and Portion 2</span>
+            </div>
+          </div>
+        </label>
+
+        <label className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${isTiered ? 'bg-amber-950/40 border-amber-500 text-white' : 'bg-slate-800/40 border-white/5 text-white hover:bg-slate-800'}`}>
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={isTiered}
+              onChange={(e) => setIsTiered(e.target.checked)}
+              className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+            />
+            <div>
+              <span className="text-xs font-bold block">Tiered green</span>
+              <span className="text-[10px] text-white block mt-0.5">Green has distinct elevation levels or tiers</span>
+            </div>
+          </div>
+        </label>
+      </div>
+
+      {/* Input Fields */}
+      <div className="bg-slate-900/80 border border-white/10 rounded-2xl p-4 mb-6 space-y-4 shadow-xl">
+        <span className="text-[10px] font-black uppercase tracking-widest text-blue-400 block">
+          {isTwoPortions ? 'Portion Measurements' : isInconsistent ? (useThirdWidth ? 'Length & 3 Width Measurements' : 'Length & 2 Width Measurements') : 'Standard Green Measurements'} ({uLabel})
+        </span>
+
+        {isTwoPortions ? (
+          <div className="space-y-6">
+            {/* Portion 1 */}
+            <div className="p-3 bg-slate-800/50 rounded-xl border border-emerald-500/20 space-y-3">
+              <span className="text-xs font-bold text-emerald-400 block uppercase tracking-wider">Portion 1</span>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-bold text-white block mb-1">Length ({uLabel})</label>
+                  <div className="flex items-center bg-slate-900 border border-white/10 rounded-xl overflow-hidden">
+                    <button onClick={() => adjust(p1Length, setP1Length, -1, 1)} className="px-3 py-2 text-white hover:bg-slate-800 text-sm font-bold">-</button>
+                    <input
+                      type="number"
+                      value={p1Length || ''}
+                      onChange={(e) => setP1Length(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-transparent text-center font-bold text-sm focus:outline-none"
+                    />
+                    <button onClick={() => adjust(p1Length, setP1Length, 1, 1)} className="px-3 py-2 text-white hover:bg-slate-800 text-sm font-bold">+</button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-white block mb-1">Width ({uLabel})</label>
+                  <div className="flex items-center bg-slate-900 border border-white/10 rounded-xl overflow-hidden">
+                    <button onClick={() => adjust(p1Width, setP1Width, -1, 1)} className="px-3 py-2 text-white hover:bg-slate-800 text-sm font-bold">-</button>
+                    <input
+                      type="number"
+                      value={p1Width || ''}
+                      onChange={(e) => setP1Width(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-transparent text-center font-bold text-sm focus:outline-none"
+                    />
+                    <button onClick={() => adjust(p1Width, setP1Width, 1, 1)} className="px-3 py-2 text-white hover:bg-slate-800 text-sm font-bold">+</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Portion 2 */}
+            <div className="p-3 bg-slate-800/50 rounded-xl border border-fuchsia-500/20 space-y-3">
+              <span className="text-xs font-bold text-fuchsia-400 block uppercase tracking-wider">Portion 2</span>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-bold text-white block mb-1">Length ({uLabel})</label>
+                  <div className="flex items-center bg-slate-900 border border-white/10 rounded-xl overflow-hidden">
+                    <button onClick={() => adjust(p2Length, setP2Length, -1, 1)} className="px-3 py-2 text-white hover:bg-slate-800 text-sm font-bold">-</button>
+                    <input
+                      type="number"
+                      value={p2Length || ''}
+                      onChange={(e) => setP2Length(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-transparent text-center font-bold text-sm focus:outline-none"
+                    />
+                    <button onClick={() => adjust(p2Length, setP2Length, 1, 1)} className="px-3 py-2 text-white hover:bg-slate-800 text-sm font-bold">+</button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-white block mb-1">Width ({uLabel})</label>
+                  <div className="flex items-center bg-slate-900 border border-white/10 rounded-xl overflow-hidden">
+                    <button onClick={() => adjust(p2Width, setP2Width, -1, 1)} className="px-3 py-2 text-white hover:bg-slate-800 text-sm font-bold">-</button>
+                    <input
+                      type="number"
+                      value={p2Width || ''}
+                      onChange={(e) => setP2Width(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-transparent text-center font-bold text-sm focus:outline-none"
+                    />
+                    <button onClick={() => adjust(p2Width, setP2Width, 1, 1)} className="px-3 py-2 text-white hover:bg-slate-800 text-sm font-bold">+</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : isInconsistent ? (
+          <div className="space-y-4">
+            <div>
+              <label className="text-[10px] font-bold text-white block mb-1">Overall Length ({uLabel})</label>
+              <div className="flex items-center bg-slate-800 border border-white/10 rounded-xl overflow-hidden">
+                <button onClick={() => adjust(length, setLength, -1, 1)} className="px-4 py-2.5 text-white hover:bg-slate-700 text-base font-bold">-</button>
+                <input
+                  type="number"
+                  value={length || ''}
+                  onChange={(e) => setLength(parseFloat(e.target.value) || 0)}
+                  className="w-full bg-transparent text-center font-black text-base focus:outline-none"
+                />
+                <button onClick={() => adjust(length, setLength, 1, 1)} className="px-4 py-2.5 text-white hover:bg-slate-700 text-base font-bold">+</button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between bg-slate-800/60 p-2.5 rounded-xl border border-white/10">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={useThirdWidth}
+                  onChange={(e) => setUseThirdWidth(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                />
+                <span className="text-xs font-bold text-white">Measure 3 width samples (include Width 3)</span>
+              </label>
+            </div>
+
+            <div className={`grid ${useThirdWidth ? 'grid-cols-3' : 'grid-cols-2'} gap-2`}>
+              <div>
+                <label className="text-[10px] font-bold text-white block mb-1">Width 1 (0.25)</label>
+                <div className="flex items-center bg-slate-800 border border-white/10 rounded-xl overflow-hidden">
+                  <input
+                    type="number"
+                    value={w1 || ''}
+                    onChange={(e) => setW1(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-transparent text-center font-bold text-sm py-2 focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-white block mb-1">Width 2 ({useThirdWidth ? '0.50' : '0.75'})</label>
+                <div className="flex items-center bg-slate-800 border border-white/10 rounded-xl overflow-hidden">
+                  <input
+                    type="number"
+                    value={w2 || ''}
+                    onChange={(e) => setW2(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-transparent text-center font-bold text-sm py-2 focus:outline-none"
+                  />
+                </div>
+              </div>
+              {useThirdWidth && (
+                <div>
+                  <label className="text-[10px] font-bold text-white block mb-1">Width 3 (0.75)</label>
+                  <div className="flex items-center bg-slate-800 border border-white/10 rounded-xl overflow-hidden">
+                    <input
+                      type="number"
+                      value={w3 || ''}
+                      onChange={(e) => setW3(parseFloat(e.target.value) || 0)}
+                      className="w-full bg-transparent text-center font-bold text-sm py-2 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] font-bold text-white block mb-1">Green Length ({uLabel})</label>
+              <div className="flex items-center bg-slate-800 border border-white/10 rounded-xl overflow-hidden">
+                <button onClick={() => adjust(length, setLength, -1, 1)} className="px-4 py-3 text-white hover:bg-slate-700 text-base font-bold">-</button>
+                <input
+                  type="number"
+                  value={length || ''}
+                  onChange={(e) => setLength(parseFloat(e.target.value) || 0)}
+                  className="w-full bg-transparent text-center font-black text-lg focus:outline-none"
+                />
+                <button onClick={() => adjust(length, setLength, 1, 1)} className="px-4 py-3 text-white hover:bg-slate-700 text-base font-bold">+</button>
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-white block mb-1">Green Width ({uLabel})</label>
+              <div className="flex items-center bg-slate-800 border border-white/10 rounded-xl overflow-hidden">
+                <button onClick={() => adjust(width, setWidth, -1, 1)} className="px-4 py-3 text-white hover:bg-slate-700 text-base font-bold">-</button>
+                <input
+                  type="number"
+                  value={width || ''}
+                  onChange={(e) => setWidth(parseFloat(e.target.value) || 0)}
+                  className="w-full bg-transparent text-center font-black text-lg focus:outline-none"
+                />
+                <button onClick={() => adjust(width, setWidth, 1, 1)} className="px-4 py-3 text-white hover:bg-slate-700 text-base font-bold">+</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Result Card */}
+      <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-emerald-500/30 rounded-2xl p-6 mb-6 shadow-2xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
+        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400 block mb-2">
+          Effective Green Diameter (EGD)
+        </span>
+        <div className="text-4xl sm:text-5xl font-black text-white mb-2 tracking-tight">
+          {mainEgdDisplay}
+        </div>
+        <p className="text-xs font-semibold text-emerald-300/90 mb-4">{formulaDisplay}</p>
+
+        {subBreakdown}
+
+        {isTiered && (
+          <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-white text-xs flex items-start gap-2">
+            <Info size={16} className="shrink-0 mt-0.5 text-amber-400" />
+            <div>
+              <strong className="block text-amber-400 font-bold">Tiered Green Note:</strong>
+              When rating a tiered green, evaluate effective depth across tier levels and consider rater adjustments for difficult tier transition areas as per Section 13.
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3664,6 +4039,12 @@ const App: React.FC = () => {
               <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Green mapping and Effective Green Diameter</p>
             </button>
 
+            <button onClick={() => { setViewingRecord(null); setView('manualEgd'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all h-full">
+              <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-blue-600/40"><Calculator size={28} /></div>
+              <h2 className="text-center text-2xl font-bold mb-2 uppercase text-blue-500">Manual EGD</h2>
+              <p className="text-white text-[13px] font-medium text-center max-w-[220px]">Manual Effective Green Diameter calculator</p>
+            </button>
+
 
             <button onClick={() => { setIsPlanningSession(true); setViewingRecord(null); setSelectedCourseForPlanning(null); setView('planning'); }} className="bg-slate-900 border border-white/5 rounded-[2.5rem] p-10 flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all h-full">
               <div className="w-16 h-16 bg-yellow-500/80 rounded-full flex items-center justify-center mb-6 shadow-xl shadow-yellow-600/40"><LampDesk size={28} /></div>
@@ -3744,6 +4125,8 @@ const App: React.FC = () => {
         </div>
       ) : view === 'manual' ? (
         <UserManual onClose={() => setView('landing')} />
+      ) : view === 'manualEgd' ? (
+        <ManualEgdCalculator onClose={() => setView('landing')} units={units} />
       ) : view === 'stimp' ? (
         <StimpCalculator onClose={() => setView('landing')} />
       ) : view === 'report' ? (
