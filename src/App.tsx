@@ -2013,6 +2013,7 @@ const ReportView: React.FC<{
                                 {s.isInconsistent ? (
                                   <>
                                     {s.pC1 && s.pD1 && <Polyline positions={[[s.pC1.lat, s.pC1.lng], [s.pD1.lat, s.pD1.lng]]} color="#facc15" weight={2} dashArray="5, 5" />}
+                                    {s.pC && s.pD && <Polyline positions={[[s.pC.lat, s.pC.lng], [s.pD.lat, s.pD.lng]]} color="#f59e0b" weight={2} dashArray="5, 5" />}
                                     {s.pC3 && s.pD3 && <Polyline positions={[[s.pC3.lat, s.pC3.lng], [s.pD3.lat, s.pD3.lng]]} color="#10b981" weight={2} dashArray="5, 5" />}
                                   </>
                                 ) : (
@@ -2144,29 +2145,69 @@ const ReportView: React.FC<{
                         return (
                           <>
                             <div className="flex justify-between text-[9px] font-bold uppercase">
-                              <span className="text-blue-400">L(curv):</span>
+                              <span className="text-blue-400">L (Curved):</span>
                               <span className="text-white">{(s.anomalousResult.curvedLength).toFixed(1)}y / {(s.anomalousResult.curvedLength / 1.09361).toFixed(1)}m</span>
                             </div>
-                            <div className="flex justify-between text-[9px] font-bold uppercase">
-                              <span className="text-orange-400">W1:</span>
-                              <span className="text-white">{(s.anomalousResult.widths[0]?.w).toFixed(1)}y / {(s.anomalousResult.widths[0]?.w / 1.09361).toFixed(1)}m</span>
-                            </div>
-                            <div className="flex justify-between text-[9px] font-bold uppercase">
-                              <span className="text-white">W2:</span>
-                              <span className="text-white">{(s.anomalousResult.widths[1]?.w).toFixed(1)}y / {(s.anomalousResult.widths[1]?.w / 1.09361).toFixed(1)}m</span>
-                            </div>
+                            {s.anomalousResult.widths?.map((w: any, idx: number) => (
+                              <div key={`anom-w-${idx}`} className="flex justify-between text-[9px] font-bold uppercase">
+                                <span className={idx === 0 ? "text-yellow-400" : idx === 1 ? "text-amber-400" : "text-emerald-400"}>
+                                  W{idx + 1} ({idx === 0 ? '0.25' : idx === 1 ? '0.50' : '0.75'}):
+                                </span>
+                                <span className="text-white">{(w.w).toFixed(1)}y / {(w.w / 1.09361).toFixed(1)}m</span>
+                              </div>
+                            ))}
+                            {s.anomalousResult.widths?.length > 0 && (() => {
+                              const avgAnomW = s.anomalousResult.widths.reduce((acc: number, curr: any) => acc + curr.w, 0) / s.anomalousResult.widths.length;
+                              return (
+                                <div className="flex justify-between text-[9px] font-bold uppercase border-t border-white/5 pt-0.5">
+                                  <span className="text-white/60">W (Avg Width):</span>
+                                  <span className="text-white">{avgAnomW.toFixed(1)}y / {(avgAnomW / 1.09361).toFixed(1)}m</span>
+                                </div>
+                              );
+                            })()}
                           </>
                         );
                       } else if (s.isLShape && s.s1 && s.s2) {
                         return (
                           <>
                             <div className="flex justify-between text-[9px] font-bold uppercase">
-                              <span className="text-blue-400">P1 L/W:</span>
-                              <span className="text-white">{s.s1.L.toFixed(1)}y / {s.s1.W.toFixed(1)}y</span>
+                              <span className="text-blue-400">Portion 1 L/W:</span>
+                              <span className="text-white">{s.s1.L.toFixed(1)}y / {s.s1.W.toFixed(1)}y ({s.s1.egd.toFixed(1)}y EGD)</span>
                             </div>
                             <div className="flex justify-between text-[9px] font-bold uppercase">
-                              <span className="text-fuchsia-400">P2 L/W:</span>
-                              <span className="text-white">{s.s2.L.toFixed(1)}y / {s.s2.W.toFixed(1)}y</span>
+                              <span className="text-fuchsia-400">Portion 2 L/W:</span>
+                              <span className="text-white">{s.s2.L.toFixed(1)}y / {s.s2.W.toFixed(1)}y ({s.s2.egd.toFixed(1)}y EGD)</span>
+                            </div>
+                          </>
+                        );
+                      } else if (s.isInconsistent) {
+                        const avgW = (s.w1_yds + s.W + s.w3_yds) / 3;
+                        const effRatio = avgW > 0 ? s.L / avgW : s.ratio;
+                        return (
+                          <>
+                            <div className="flex justify-between text-[9px] font-bold uppercase">
+                              <span className="text-blue-400">Length (L):</span>
+                              <span className="text-white">{s.L.toFixed(1)}y / {(s.L / 1.09361).toFixed(1)}m</span>
+                            </div>
+                            <div className="flex justify-between text-[9px] font-bold uppercase">
+                              <span className="text-yellow-400">Width 1 (W1 - 0.25):</span>
+                              <span className="text-white">{s.w1_yds.toFixed(1)}y / {(s.w1_yds / 1.09361).toFixed(1)}m</span>
+                            </div>
+                            <div className="flex justify-between text-[9px] font-bold uppercase">
+                              <span className="text-amber-400">Width 2 (W2 - 0.50):</span>
+                              <span className="text-white">{s.W.toFixed(1)}y / {(s.W / 1.09361).toFixed(1)}m</span>
+                            </div>
+                            <div className="flex justify-between text-[9px] font-bold uppercase">
+                              <span className="text-emerald-400">Width 3 (W3 - 0.75):</span>
+                              <span className="text-white">{s.w3_yds.toFixed(1)}y / {(s.w3_yds / 1.09361).toFixed(1)}m</span>
+                            </div>
+                            <div className="flex justify-between text-[9px] font-bold uppercase border-t border-white/5 pt-0.5">
+                              <span className="text-white/80">Average Width (Wavg):</span>
+                              <span className="text-white">{avgW.toFixed(1)}y / {(avgW / 1.09361).toFixed(1)}m</span>
+                            </div>
+                            <div className="flex justify-between text-[9px] font-bold uppercase">
+                              <span className="text-white/40">Effective Ratio:</span>
+                              <span className="text-white">{effRatio.toFixed(2)}</span>
                             </div>
                           </>
                         );
@@ -2178,7 +2219,7 @@ const ReportView: React.FC<{
                               <span className="text-white">{s.L.toFixed(1)}y / {(s.L / 1.09361).toFixed(1)}m</span>
                             </div>
                             <div className="flex justify-between text-[9px] font-bold uppercase">
-                              <span className="text-white">Width:</span>
+                              <span className="text-yellow-400">Width:</span>
                               <span className="text-white">{s.W.toFixed(1)}y / {(s.W / 1.09361).toFixed(1)}m</span>
                             </div>
                             <div className="flex justify-between text-[9px] font-bold uppercase">
@@ -5051,11 +5092,14 @@ const App: React.FC = () => {
                                 </div>
                               );
                             } else if (s.isInconsistent) {
+                              const avgW = (s.w1_yds + s.W + s.w3_yds) / 3;
                               return (
                                 <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
                                   <span className="text-[10px] font-bold uppercase text-blue-400">L: {(s.L * m).toFixed(1)}</span>
                                   <span className="text-[10px] font-bold uppercase text-yellow-400">W1: {(s.w1_yds * m).toFixed(1)}</span>
-                                  <span className="text-[10px] font-bold uppercase text-emerald-400">W2: {(s.w3_yds * m).toFixed(1)}</span>
+                                  <span className="text-[10px] font-bold uppercase text-amber-400">W2: {(s.W * m).toFixed(1)}</span>
+                                  <span className="text-[10px] font-bold uppercase text-emerald-400">W3: {(s.w3_yds * m).toFixed(1)}</span>
+                                  <span className="text-[10px] font-bold uppercase text-white/60">Wavg: {(avgW * m).toFixed(1)}</span>
                                 </div>
                               );
                             } else {
