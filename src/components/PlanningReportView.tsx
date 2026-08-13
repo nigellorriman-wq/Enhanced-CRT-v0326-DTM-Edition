@@ -87,7 +87,33 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   useEffect(() => { isLoadingLidarRef.current = isLoadingLidar; }, [isLoadingLidar]);
 
   const currentTrack = tracks[currentIndex];
-  const isSummaryPage = currentIndex === tracks.length;
+  const isScratchSummary = currentIndex === tracks.length;
+  const isBogeySummary = currentIndex === tracks.length + 1;
+  const isSummaryPage = isScratchSummary || isBogeySummary;
+
+  const getTrackPathForPlayer = (track: SavedRecord, player: 'scratch' | 'bogey'): GeoPoint[] => {
+    if (track.effectivePaths && track.effectivePaths[player] && track.effectivePaths[player].length > 0) {
+      return track.effectivePaths[player];
+    }
+    const points = track.raterPathPoints || track.points;
+    if (!points || points.length === 0) return [];
+    if (!track.pivotPoints || track.pivotPoints.length === 0) return points;
+
+    const startPoint = points[0];
+    const endPoint = points[points.length - 1];
+    const sortedPivots = [...track.pivotPoints].sort((a, b) => a.point.timestamp - b.point.timestamp);
+    
+    const anchors: GeoPoint[] = [startPoint];
+    for (const pivot of sortedPivots) {
+      if (player === 'scratch') {
+        if (pivot.type === 'common' || pivot.type === 'scratch_cut') anchors.push(pivot.point);
+      } else {
+        if (pivot.type === 'common' || pivot.type === 'bogoy_round') anchors.push(pivot.point);
+      }
+    }
+    anchors.push(endPoint);
+    return anchors;
+  };
 
   useEffect(() => {
     if (isSummaryPage && tracks.length > 0 && avgWindData === null && !loadingWind) {
@@ -403,7 +429,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     window.scrollTo(0, 0);
     const pdf = new jsPDF('p', 'mm', 'a4');
 
-    for (let i = 0; i <= tracks.length; i++) {
+    for (let i = 0; i <= tracks.length + 1; i++) {
       setCurrentIndex(i);
       
       if (i < tracks.length) {
@@ -419,7 +445,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           attempts++;
         }
       } else {
-        // Summary page: wait for all tracks to be processed and wind loading to finish
+        // Summary page (Scratch or Bogey): wait for all tracks to be processed and wind loading to finish
         let attempts = 0;
         while ((isLoadingLidarRef.current || loadingWind) && attempts < 150) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -430,7 +456,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       // Wait for React DOM updates to flush (clearing any overlays) and Recharts/Leaflet to finish rendering
       await new Promise(resolve => setTimeout(resolve, 500));
       
-      const waitTime = i === tracks.length ? 2500 : 1500;
+      const waitTime = i >= tracks.length ? 2500 : 1500;
       await new Promise(resolve => setTimeout(resolve, waitTime));
       
       if (reportRef.current) {
@@ -785,9 +811,15 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           ))}
           <button
             onClick={() => setCurrentIndex(tracks.length)}
-            className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest whitespace-nowrap transition-all ${currentIndex === tracks.length ? 'bg-amber-600 text-white shadow-lg' : 'bg-slate-800 text-slate-400'}`}
+            className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest whitespace-nowrap transition-all ${currentIndex === tracks.length ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-800 text-emerald-400 border border-emerald-500/30'}`}
           >
-            Summary
+            Scratch Summary
+          </button>
+          <button
+            onClick={() => setCurrentIndex(tracks.length + 1)}
+            className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest whitespace-nowrap transition-all ${currentIndex === tracks.length + 1 ? 'bg-amber-600 text-white shadow-lg' : 'bg-slate-800 text-yellow-400 border border-yellow-500/30'}`}
+          >
+            Bogey Summary
           </button>
         </div>
 
@@ -820,7 +852,9 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
               </div>
             </div>
             <div className="flex flex-col items-end text-right">
-              <span className="text-base font-black text-slate-900 uppercase">{isSummaryPage ? 'Course Summary' : `Hole ${currentTrack?.holeNumber || currentIndex + 1}`}</span>
+              <span className="text-base font-black text-slate-900 uppercase">
+                {isScratchSummary ? 'Course Summary (Scratch)' : isBogeySummary ? 'Course Summary (Bogey)' : `Hole ${currentTrack?.holeNumber || currentIndex + 1}`}
+              </span>
               <span className="text-[9px] font-bold text-slate-900 uppercase tracking-widest mb-1">{reportTitle}</span>
               {(() => {
                 const startPoint = isSummaryPage ? tracks[0]?.points[0] : (currentTrack?.raterPathPoints?.[0] || currentTrack?.points[0]);
@@ -853,7 +887,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
               <div className="flex-1 flex flex-col">
                 <div className="h-[600px] w-full rounded-3xl overflow-hidden border border-slate-200 shadow-inner relative">
                   <MapContainer
-                    key="report-map-summary"
+                    key={isScratchSummary ? 'report-map-summary-scratch' : 'report-map-summary-bogey'}
                     center={[tracks[0]?.points[0]?.lat || 0, tracks[0]?.points[0]?.lng || 0]}
                     zoom={16}
                     style={{ height: '100%', width: '100%' }}
@@ -869,14 +903,18 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                     attribution='&copy; Esri'
                   />
                   {tracks.map((track, idx) => {
-                    const points = track.raterPathPoints || track.points;
+                    const player = isScratchSummary ? 'scratch' : 'bogey';
+                    const points = getTrackPathForPlayer(track, player);
                     const midIdx = Math.floor(points.length / 2);
-                    const midPoint = points[midIdx];
+                    const midPoint = points[midIdx] || points[0];
+                    const lineColor = isScratchSummary ? '#10b981' : '#facc15';
+                    const borderColor = isScratchSummary ? '#10b981' : '#facc15';
+                    const textColor = isScratchSummary ? '#065f46' : '#854d0e';
                     return (
                       <React.Fragment key={track.id}>
                         <Polyline
                           positions={points.map(p => [p.lat, p.lng])}
-                          color="#fbbf24"
+                          color={lineColor}
                           weight={4}
                           opacity={0.9}
                         />
@@ -884,7 +922,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                           position={[midPoint.lat, midPoint.lng]}
                           icon={L.divIcon({
                             className: 'custom-div-icon',
-                            html: `<div style="background-color: white; color: #1e293b; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; border: 2px solid #fbbf24; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${track.holeNumber || idx + 1}</div>`,
+                            html: `<div style="background-color: white; color: ${textColor}; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; border: 2.5px solid ${borderColor}; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${track.holeNumber || idx + 1}</div>`,
                             iconSize: [24, 24],
                             iconAnchor: [12, 12]
                           })}
@@ -892,7 +930,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                       </React.Fragment>
                     );
                   })}
-                  <MapBoundsController points={tracks.flatMap(t => t.raterPathPoints || t.points)} />
+                  <MapBoundsController points={tracks.flatMap(t => getTrackPathForPlayer(t, isScratchSummary ? 'scratch' : 'bogey'))} />
                   <MapRuler isSummary={true} />
                 </MapContainer>
                 
@@ -921,8 +959,11 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
                   </div>
                 )}
 
-                <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm px-3 py-1.5 rounded-full border border-slate-200 shadow-sm z-[1000]">
-                  <span className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Satellite Overview</span>
+                <div className="absolute bottom-4 right-4 bg-white/90 backdrop-blur-sm px-3 py-1.5 rounded-full border border-slate-200 shadow-sm z-[1000] flex items-center gap-2">
+                  <div className={`w-2.5 h-2.5 rounded-full ${isScratchSummary ? 'bg-emerald-500' : 'bg-amber-400'}`} />
+                  <span className="text-[10px] font-black text-slate-900 uppercase tracking-widest">
+                    {isScratchSummary ? 'Scratch Course Overview' : 'Bogey Course Overview'}
+                  </span>
                 </div>
               </div>
               
@@ -1124,7 +1165,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           <div className="mt-auto pt-8 border-t border-slate-100 flex justify-between items-center text-[9px] font-bold text-slate-900 uppercase tracking-widest">
             <span>Generated by Scottish Golf Rating Toolkit</span>
             <span>{new Date().toLocaleDateString()}</span>
-            <span>Page {currentIndex + 1} of {tracks.length + 1}</span>
+            <span>Page {currentIndex + 1} of {tracks.length + 2}</span>
           </div>
         </div>
       </div>
@@ -1138,7 +1179,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
         </button>
         <div className="flex flex-col items-center gap-1">
           <span className="text-white/60 font-bold text-xs uppercase tracking-widest">
-            {isSummaryPage ? 'Course Summary' : `Hole ${currentTrack?.holeNumber || currentIndex + 1} of ${tracks.length}`}
+            {isScratchSummary ? 'Course Summary - Scratch' : isBogeySummary ? 'Course Summary - Bogey' : `Hole ${currentTrack?.holeNumber || currentIndex + 1} of ${tracks.length}`}
           </span>
           <button 
             onClick={() => setShowTitleDialog(true)}
@@ -1148,8 +1189,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
           </button>
         </div>
         <button 
-          onClick={() => setCurrentIndex(prev => Math.min(tracks.length, prev + 1))}
-          disabled={currentIndex === tracks.length}
+          onClick={() => setCurrentIndex(prev => Math.min(tracks.length + 1, prev + 1))}
+          disabled={currentIndex === tracks.length + 1}
           className="flex items-center gap-2 text-white font-bold uppercase text-xs tracking-widest disabled:opacity-30"
         >
           Next <ChevronRight size={20} />
