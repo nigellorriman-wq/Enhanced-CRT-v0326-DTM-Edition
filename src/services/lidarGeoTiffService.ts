@@ -438,6 +438,20 @@ class LidarGeoTiffService {
   }
 
   /**
+   * Checks if any GeoTIFFs are currently loaded in memory
+   */
+  hasLoadedTiffs(): boolean {
+    return this.loadedTiffs.size > 0;
+  }
+
+  /**
+   * Returns the count of loaded GeoTIFFs
+   */
+  getLoadedCount(): number {
+    return this.loadedTiffs.size;
+  }
+
+  /**
    * Checks if a given point is covered by any downloaded GeoTIFF
    */
   isAreaDownloaded(lat: number, lng: number): boolean {

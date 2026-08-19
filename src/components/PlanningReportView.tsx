@@ -170,6 +170,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   };
 
   const [isTiffReady, setIsTiffReady] = useState(false);
+  const onlineOutageRef = useRef(false);
 
   useEffect(() => {
     const loadTiffs = async () => {
@@ -202,10 +203,17 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       console.error('[LiDAR] Failed to read elevation from GeoTIFF in report', e);
     }
 
-    // 2. Fallback to Online API with 8-second timeout protection
+    // If offline GeoTIFFs are loaded, do not stall on network calls for missing tile/gap points;
+    // local interpolation will smoothly bridge between valid GeoTIFF points & GPS anchors.
+    if (lidarGeoTiffService.hasLoadedTiffs() || onlineOutageRef.current) {
+      elevationCache.current.set(preciseKey, null);
+      return null;
+    }
+
+    // 2. Fallback to Online API with 1.5-second fast-fail timeout protection
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), 1500);
 
       const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`, {
         signal: controller.signal
@@ -214,6 +222,10 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
 
       const contentType = response.headers.get('content-type');
       if (!response.ok || !contentType || !contentType.includes('application/json')) {
+        if (response.status === 502 || response.status === 504 || response.status === 404) {
+          // If upstream is returning 502/504, flag outage for current profile batch
+          if (response.status >= 500) onlineOutageRef.current = true;
+        }
         elevationCache.current.set(preciseKey, null);
         return null;
       }
@@ -236,6 +248,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       elevationCache.current.set(preciseKey, elevation);
       return elevation;
     } catch (e) {
+      onlineOutageRef.current = true;
       elevationCache.current.set(preciseKey, null);
       return null;
     }

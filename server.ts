@@ -115,6 +115,10 @@ function extractElevationFromWmsResponse(data: any): number | null {
   return findValue(data);
 }
 
+// Track upstream WMS service availability to avoid blocking when JNCC is returning 502/504
+let wmsOutageUntil = 0;
+let wmsConsecutiveErrors = 0;
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -126,12 +130,10 @@ async function startServer() {
 
   // API route for LiDAR data
   app.get("/api/lidar", async (req, res) => {
-    console.log(`[LiDAR API] Request received: lat=${req.query.lat}, lng=${req.query.lng}`);
     try {
       const { lat, lng } = req.query;
 
       if (!lat || !lng) {
-        console.error('[LiDAR API] Missing lat/lng');
         return res.status(400).json({ error: 'Missing lat/lng' });
       }
 
@@ -141,11 +143,15 @@ async function startServer() {
       // Scotland approximate bounding box
       const isOutsideScotland = latNum < 54.5 || latNum > 61.0 || lngNum < -9.0 || lngNum > -0.5;
       if (isOutsideScotland) {
-        console.log(`[LiDAR API] Location outside Scotland: lat=${lat}, lng=${lng}`);
         return res.status(400).json({ 
           error: 'Location outside Scotland', 
           details: 'This toolkit currently only supports LiDAR data for Scotland. The coordinates provided appear to be in another region (e.g. Wales or England).' 
         });
+      }
+
+      // If upstream service is in outage cooldown, fail-fast without hanging
+      if (Date.now() < wmsOutageUntil) {
+        return res.status(404).json({ error: 'No elevation data found at this location (online service temporarily unavailable)' });
       }
 
       const wmsUrl = `https://srsp-ows.jncc.gov.uk/ows`;
@@ -161,6 +167,7 @@ async function startServer() {
       
       let elevation = null;
       let primaryRequestSuccess = false;
+      let isHostDown = false;
 
       // Convert to BNG for more reliable querying against JNCC Scottish data
       const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lngNum, latNum]);
@@ -184,23 +191,24 @@ async function startServer() {
         feature_count: '10'
       });
 
-      console.log(`[LiDAR API] Polling terrain data source: lat=${latNum.toFixed(4)}, lng=${lngNum.toFixed(4)}`);
-
       try {
-        const response = await axios.get(wmsUrl, { params, timeout: 15000 });
+        const response = await axios.get(wmsUrl, { params, timeout: 2500 });
         primaryRequestSuccess = true;
+        wmsConsecutiveErrors = 0;
         elevation = extractElevationFromWmsResponse(response.data);
-        if (elevation !== null) {
-          console.log(`[LiDAR API] SUCCESS: Found topographic data (${elevation}m)`);
-        }
       } catch (e: any) {
-        // Just log the failure reason quietly
-        console.log(`[LiDAR API] Composite layer poll paused (Server status: ${e.message})`);
+        const status = e.response?.status;
+        if (status === 502 || status === 504 || e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT') {
+          isHostDown = true;
+          wmsConsecutiveErrors++;
+          if (wmsConsecutiveErrors >= 2) {
+            wmsOutageUntil = Date.now() + 60000; // 60s cooldown
+          }
+        }
       }
 
-      // Fallback: if the primary request found no data, or if it failed, try individual phase layers.
-      if (elevation === null) {
-        console.log(`[LiDAR API] Initializing diagnostic scan for phase layers...`);
+      // Fallback: only try individual phase layers if the host is responsive and primary returned empty
+      if (elevation === null && !isHostDown) {
         const phaseLayers = layers.filter(l => l !== primaryLayer);
         for (const layer of phaseLayers) {
           try {
@@ -208,10 +216,9 @@ async function startServer() {
             individualParams.set('layers', layer);
             individualParams.set('query_layers', layer);
             
-            const response = await axios.get(wmsUrl, { params: individualParams, timeout: 4000 });
+            const response = await axios.get(wmsUrl, { params: individualParams, timeout: 2000 });
             elevation = extractElevationFromWmsResponse(response.data);
             if (elevation !== null) {
-              console.log(`[LiDAR API] RECOVERY SUCCESS: Found elevation ${elevation} in layer ${layer}`);
               break;
             }
           } catch (e: any) {
@@ -220,9 +227,8 @@ async function startServer() {
         }
       }
 
-      // Final fallback: Try WGS84 only if everything else failed
-      if (elevation === null) {
-        console.log(`[LiDAR API] BNG projection miss, attempting final WGS84 coordinate scan...`);
+      // Final fallback: Try WGS84 only if everything else was responsive but empty
+      if (elevation === null && !isHostDown) {
         const deltaWGS = 0.0005;
         const wgsParams = new URLSearchParams(params);
         wgsParams.set('srs', 'EPSG:4326');
@@ -232,10 +238,9 @@ async function startServer() {
           try {
             wgsParams.set('layers', layer);
             wgsParams.set('query_layers', layer);
-            const response = await axios.get(wmsUrl, { params: wgsParams, timeout: 4000 });
+            const response = await axios.get(wmsUrl, { params: wgsParams, timeout: 2000 });
             elevation = extractElevationFromWmsResponse(response.data);
             if (elevation !== null) {
-              console.log(`[LiDAR API] RECOVERY SUCCESS: Elevation ${elevation} found via WGS84 fallback`);
               break;
             }
           } catch (e) {
@@ -247,12 +252,9 @@ async function startServer() {
       if (elevation !== null && elevation !== undefined) {
         res.json({ elevation });
       } else {
-        // Log "No coverage" as an expected result, not a failure
-        console.log(`[LiDAR API] Coverage Scan: No topographic data found for lat=${latNum.toFixed(4)}, lng=${lngNum.toFixed(4)}`);
         res.status(404).json({ error: 'No elevation data found at this location' });
       }
     } catch (error: any) {
-      console.error('[LiDAR API] Global Error:', error.message);
       res.status(500).json({ error: 'Failed to fetch LiDAR data', details: error.message });
     }
   });

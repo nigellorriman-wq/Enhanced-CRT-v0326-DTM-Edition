@@ -7,6 +7,7 @@ import html2canvas from 'html2canvas';
 import { golfCourses } from '../constants/golfCourses';
 import { osgbToWgs84 } from '../utils/coords';
 import { fetchAverageWindData, WindData } from '../services/windService';
+import { lidarGeoTiffService } from '../services/lidarGeoTiffService';
 
 interface LidarSummary {
   coveragePercent: number;
@@ -253,7 +254,18 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
             const key = `${task.lat}_${task.lng}`;
             let elevationVal: number | null = null;
             
-            for (let attempt = 1; attempt <= 3; attempt++) {
+            // Check offline GeoTIFF first
+            try {
+              const offlineElev = await lidarGeoTiffService.getElevation(task.lat, task.lng);
+              if (offlineElev !== null) {
+                elevationsMap.set(key, offlineElev);
+                return;
+              }
+            } catch (e) {
+              // Ignore offline lookup error
+            }
+
+            if (!lidarGeoTiffService.hasLoadedTiffs()) {
               try {
                 const response = await fetch(`/api/lidar?lat=${task.lat}&lng=${task.lng}`);
                 const contentType = response.headers.get('content-type');
@@ -262,14 +274,9 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                   if (data && typeof data.elevation === 'number' && data.elevation !== null) {
                     elevationVal = data.elevation;
                   }
-                  break; // Success, exit retry
-                } else if (response.status === 404) {
-                  break; // No elevation data found
                 }
               } catch (e) {
-                if (attempt < 3) {
-                  await new Promise(resolve => setTimeout(resolve, attempt * 150));
-                }
+                // Silently ignore network failure
               }
             }
             elevationsMap.set(key, elevationVal);
@@ -553,7 +560,20 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
         for (const pt of points) {
           let elevationVal: number | null = null;
           
-          for (let attempt = 1; attempt <= 3; attempt++) {
+          // Check offline GeoTIFF first
+          try {
+            const offlineElev = await lidarGeoTiffService.getElevation(pt.lat, pt.lng);
+            if (offlineElev !== null) {
+              elevationVal = offlineElev;
+              hits++;
+              currentReadings.push({ elevation: elevationVal, lat: pt.lat, lng: pt.lng });
+              continue;
+            }
+          } catch (e) {
+            // Ignore offline error
+          }
+
+          if (!lidarGeoTiffService.hasLoadedTiffs()) {
             try {
               const response = await fetch(`/api/lidar?lat=${pt.lat}&lng=${pt.lng}`);
               const contentType = response.headers.get('content-type');
@@ -563,15 +583,9 @@ export const CoursePlanning: React.FC<CoursePlanningProps> = ({ onSelect, onClos
                   elevationVal = data.elevation;
                   hits++;
                 }
-                break; // Exit retry loop on success
-              } else if (response.status === 404) {
-                // A 404 means definitively "No elevation data found at this location". Do not retry!
-                break;
               }
             } catch (e) {
-              if (attempt < 3) {
-                await new Promise(resolve => setTimeout(resolve, attempt * 150));
-              }
+              // Silently ignore network failure
             }
           }
           currentReadings.push({ elevation: elevationVal, lat: pt.lat, lng: pt.lng });

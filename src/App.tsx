@@ -3255,6 +3255,11 @@ const App: React.FC = () => {
       if (contentType && contentType.includes('application/json')) {
         const data = await response.json();
         if (!response.ok) {
+          if (response.status === 404) {
+            setLidarStatus('idle');
+            setLidarDebug(prev => ({ ...prev, response: 'No elevation data at this location' }));
+            return null;
+          }
           throw new Error(data.details || data.error || `HTTP error! status: ${response.status}`);
         }
         setLidarDebug(prev => ({ ...prev, response: data }));
@@ -4887,6 +4892,7 @@ const App: React.FC = () => {
                                 {s.isInconsistent ? (
                                   <>
                                     {s.pC1 && s.pD1 && <Polyline positions={[[s.pC1.lat, s.pC1.lng], [s.pD1.lat, s.pD1.lng]]} color="#facc15" weight={2} dashArray="5, 5" />}
+                                    {s.pC && s.pD && <Polyline positions={[[s.pC.lat, s.pC.lng], [s.pD.lat, s.pD.lng]]} color="#f59e0b" weight={2} dashArray="5, 5" />}
                                     {s.pC3 && s.pD3 && <Polyline positions={[[s.pC3.lat, s.pC3.lng], [s.pD3.lat, s.pD3.lng]]} color="#10b981" weight={2} dashArray="5, 5" />}
                                   </>
                                 ) : (
