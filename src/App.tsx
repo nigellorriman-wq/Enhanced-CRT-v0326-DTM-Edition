@@ -3036,10 +3036,12 @@ const HOLE_COLORS = [
   '#06b6d4', // Cyan 500
 ];
 
+export type MapLayerMode = 'satellite' | 'satellite_geotiff' | 'osm' | 'osm_geotiff';
+
 const App: React.FC = () => {
   const [view, setView] = useState<AppView>('landing');
   const [units, setUnits] = useState<UnitSystem>('Yards');
-  const [mapStyle, setMapStyle] = useState<'Street' | 'Satellite' | 'LiDAR DTM'>('Satellite');
+  const [mapLayerMode, setMapLayerMode] = useState<MapLayerMode>('satellite');
   const [pos, setPos] = useState<GeoPoint | null>(null);
   const [history, setHistory] = useState<SavedRecord[]>([]);
   const [viewingRecord, setViewingRecord] = useState<SavedRecord | null>(null);
@@ -3108,14 +3110,6 @@ const App: React.FC = () => {
     }
   }, [planningKmlTracks]);
 
-  React.useEffect(() => {
-    if (mapStyle === 'LiDAR DTM') {
-      tilesLoadedCount.current = 0;
-      setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'loading');
-    } else if (!isPlanningSession) {
-      setLidarStatus('idle');
-    }
-  }, [mapStyle, isPlanningSession]);
   const [lidarDebug, setLidarDebug] = useState<{ url: string, response: any, coords: { lat: number, lng: number } | null }>({ url: '', response: null, coords: null });
   const [showLidarDebug, setShowLidarDebug] = useState(false);
   const [lidarLayerLoading, setLidarLayerLoading] = useState(false);
@@ -3131,6 +3125,55 @@ const App: React.FC = () => {
     const id = keys[0];
     return { id, ...activeGeoTiffOverlays[id] };
   }, [activeGeoTiffOverlays]);
+
+  React.useEffect(() => {
+    if (mapLayerMode === 'satellite_geotiff' || mapLayerMode === 'osm_geotiff') {
+      tilesLoadedCount.current = 0;
+      setLidarStatus(prev => (prev === 'geotiff' || prev === 'offline') ? prev : 'geotiff');
+    } else if (!isPlanningSession) {
+      setLidarStatus('idle');
+    }
+  }, [mapLayerMode, isPlanningSession]);
+
+  // Auto-generate overlays for offline GeoTIFFs when in GeoTIFF overlay modes
+  useEffect(() => {
+    if (mapLayerMode === 'satellite_geotiff' || mapLayerMode === 'osm_geotiff') {
+      if (offlineGeoTiffs.length > 0 && Object.keys(activeGeoTiffOverlays).length === 0) {
+        (async () => {
+          const newOverlays: Record<string, any> = {};
+          for (const tiff of offlineGeoTiffs) {
+            try {
+              const overlay = await lidarGeoTiffService.generateOverlay(tiff.id);
+              if (overlay) {
+                newOverlays[tiff.id] = overlay;
+              }
+            } catch (e) {
+              console.error('Error auto-generating GeoTIFF overlay:', e);
+            }
+          }
+          if (Object.keys(newOverlays).length > 0) {
+            setActiveGeoTiffOverlays(prev => ({ ...prev, ...newOverlays }));
+          }
+        })();
+      }
+    }
+  }, [mapLayerMode, offlineGeoTiffs]);
+
+  const cycleMapLayerMode = () => {
+    setMapLayerMode(prev => {
+      switch (prev) {
+        case 'satellite':
+          return 'satellite_geotiff';
+        case 'satellite_geotiff':
+          return 'osm';
+        case 'osm':
+          return 'osm_geotiff';
+        case 'osm_geotiff':
+        default:
+          return 'satellite';
+      }
+    });
+  };
   const [showTerrainManager, setShowTerrainManager] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectionBounds, setSelectionBounds] = useState<L.LatLngBounds | null>(null);
@@ -4191,7 +4234,7 @@ const App: React.FC = () => {
             } else {
               setActiveLidarStyles('scotland:lidar-dem-viridis');
             }
-            setMapStyle('LiDAR DTM');
+            setMapLayerMode('satellite_geotiff');
             setView('landing');
 
             // Zoom to coverage if bounds are available
@@ -4218,7 +4261,7 @@ const App: React.FC = () => {
             setIsPlanningSession(true);
             setIsFollowing(true);
             setMapLockKey(k => k + 1);
-            setMapStyle('LiDAR DTM');
+            setMapLayerMode('satellite');
             setMapCenter({ lat, lng, accuracy: 0, timestamp: Date.now(), alt: null, altAccuracy: null });
             setPos({ lat, lng, accuracy: 0.5, timestamp: Date.now(), alt: null, altAccuracy: null, source: 'Manual' });
             setPlanningKmlTracks(kmlTracks || []);
@@ -4375,11 +4418,32 @@ const App: React.FC = () => {
                 <Mountain size={20} />
               </button>
               <button 
-                onClick={() => setMapStyle(s => s === 'Street' ? 'Satellite' : s === 'Satellite' ? 'LiDAR DTM' : 'Street')} 
-                className="bg-slate-800 border border-white/20 p-3.5 rounded-full text-blue-400 shadow-2xl active:scale-90"
-                title="Change Map Style (Street / Satellite / LiDAR)"
+                onClick={cycleMapLayerMode} 
+                className={`bg-slate-800 border p-3.5 rounded-full shadow-2xl active:scale-90 transition-all ${
+                  mapLayerMode === 'satellite' 
+                    ? 'border-white/20 text-blue-400' 
+                    : mapLayerMode === 'satellite_geotiff' 
+                    ? 'border-emerald-500/70 text-emerald-400' 
+                    : mapLayerMode === 'osm' 
+                    ? 'border-yellow-500/60 text-yellow-400' 
+                    : 'border-emerald-400 text-emerald-300'
+                }`}
+                title={
+                  mapLayerMode === 'satellite' 
+                    ? '1) Satellite imagery only (Click for Satellite + GeoTIFF)' 
+                    : mapLayerMode === 'satellite_geotiff' 
+                    ? '2) Satellite with GeoTiff Overlay (Click for OSM only)' 
+                    : mapLayerMode === 'osm' 
+                    ? '3) OSM imagery only (Click for OSM + GeoTIFF)' 
+                    : '4) OSM mapping with GeoTiff Overlay (Click for Satellite only)'
+                }
               >
-                <Layers size={20} />
+                <div className="relative flex items-center justify-center">
+                  <Layers size={20} />
+                  {(mapLayerMode === 'satellite_geotiff' || mapLayerMode === 'osm_geotiff') && (
+                    <span className="absolute -top-1.5 -right-1.5 w-2.5 h-2.5 bg-emerald-400 rounded-full ring-2 ring-slate-900 animate-pulse" />
+                  )}
+                </div>
               </button>
             </div>
           </div>
@@ -4389,41 +4453,12 @@ const App: React.FC = () => {
                 <MapContainer center={[0, 0]} zoom={2} className="h-full w-full" zoomControl={false} attributionControl={false} style={{ backgroundColor: '#020617' }}>
                 <MapRef onMap={setMapInstance} />
                 <TileLayer 
-                  url={(mapStyle === 'Satellite' || mapStyle === 'LiDAR DTM') 
+                  url={(mapLayerMode === 'satellite' || mapLayerMode === 'satellite_geotiff') 
                     ? "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" 
                     : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"} 
                   maxZoom={22} 
                   maxNativeZoom={19} 
                 />
-                {mapStyle === 'LiDAR DTM' && (
-                  <WMSTileLayer
-                    key={`lidar-layer-${activeLidarLayers}`}
-                    url="https://srsp-ows.jncc.gov.uk/ows"
-                    layers={activeLidarLayers}
-                    styles={activeLidarStyles}
-                    format="image/png"
-                    transparent={true}
-                    version="1.3.0"
-                    opacity={lidarGridOpacity * 0.5} // Scale it a bit as 1.0 might be too much for WMS
-                    maxZoom={22}
-                    maxNativeZoom={18}
-                    minZoom={10}
-                    eventHandlers={{
-                      loading: () => { setLidarLayerLoading(true); },
-                      load: () => { 
-                        setLidarLayerLoading(false); 
-                        tilesLoadedCount.current += 1;
-                        setLidarStatus('available');
-                      },
-                      tileerror: () => { 
-                        // Only set error if we haven't loaded ANY tiles yet
-                        if (tilesLoadedCount.current === 0) {
-                          setLidarStatus('error'); 
-                        }
-                      }
-                    }}
-                  />
-                )}
                 <SelectionHandler 
                   active={selectionMode} 
                   onSelectionComplete={(bounds) => {
@@ -4438,76 +4473,80 @@ const App: React.FC = () => {
                     pathOptions={{ color: '#10b981', weight: 2, fillOpacity: 0.1 }} 
                   />
                 )}
-                {Array.from(groupedDiscoveredTiles.entries()).map(([gridRef, tiles]) => {
-                  // Pick the best tile to represent the group (prioritizing highest phase, then resolution)
-                  const bestTile = [...tiles].sort((a, b) => {
-                    if (b.phase !== a.phase) return b.phase - a.phase;
-                    return a.resolution - b.resolution;
-                  })[0];
-                  
-                  const isAnySelected = tiles.some(t => selectedTileIds.has(t.id));
-                  const isAnyDownloaded = tiles.some(t => offlineGeoTiffs.some(ot => ot.id === t.url));
-                  const selectedTile = tiles.find(t => selectedTileIds.has(t.id)) || bestTile;
+                {(mapLayerMode === 'satellite_geotiff' || mapLayerMode === 'osm_geotiff') && (
+                  <>
+                    {Array.from(groupedDiscoveredTiles.entries()).map(([gridRef, tiles]) => {
+                      // Pick the best tile to represent the group (prioritizing highest phase, then resolution)
+                      const bestTile = [...tiles].sort((a, b) => {
+                        if (b.phase !== a.phase) return b.phase - a.phase;
+                        return a.resolution - b.resolution;
+                      })[0];
+                      
+                      const isAnySelected = tiles.some(t => selectedTileIds.has(t.id));
+                      const isAnyDownloaded = tiles.some(t => offlineGeoTiffs.some(ot => ot.id === t.url));
+                      const selectedTile = tiles.find(t => selectedTileIds.has(t.id)) || bestTile;
 
-                  return (
-                    <React.Fragment key={`discovered-group-${gridRef}`}>
-                      <Polygon 
-                        positions={bestTile.corners}
-                        eventHandlers={{
-                          click: () => !isAnyDownloaded && handleToggleTileSelection(selectedTile.id)
-                        }}
-                        pathOptions={{
-                          color: isAnyDownloaded ? '#10b981' : (isAnySelected ? '#3b82f6' : '#facc15'),
-                          weight: isAnySelected ? 3 : 2,
-                          fill: true,
-                          fillOpacity: 0.05,
-                          dashArray: isAnySelected ? '' : '5, 5'
-                        }}
-                      />
-                      <Marker 
-                        key={`marker-group-${gridRef}`}
-                        position={[bestTile.bounds.maxLat, bestTile.bounds.minLng]} 
-                        icon={L.divIcon({ 
-                          className: 'bg-transparent border-none', 
-                          html: `<div class="text-[10px] font-bold text-white whitespace-nowrap" style="text-shadow: 1px 1px 2px black; margin-top: 2px; margin-left: 2px;">${gridRef}<br/>${selectedTile.resolution}m</div>`,
-                          iconSize: [0, 0],
-                          iconAnchor: [0, 0]
-                        })}
-                        interactive={false}
-                      />
-                    </React.Fragment>
-                  );
-                })}
-                {Object.entries(activeGeoTiffOverlays).map(([id, overlay]) => (
-                  <React.Fragment key={`overlay-${id}`}>
-                    {overlay.dataUrl && (
-                    <ImageOverlay
-                      key={`img-${id}-${(overlay as any).timestamp || 'initial'}`}
-                      url={overlay.dataUrl}
-                      bounds={overlay.bounds}
-                      opacity={geoTiffOpacities[id] ?? 0.6}
-                      zIndex={1000}
-                      pane="overlayPane"
-                    />
-                    )}
-                    <Polygon 
-                      key={`poly-${id}`}
-                      positions={overlay.corners || [
-                        [overlay.bounds[0][0], overlay.bounds[0][1]],
-                        [overlay.bounds[0][0], overlay.bounds[1][1]],
-                        [overlay.bounds[1][0], overlay.bounds[1][1]],
-                        [overlay.bounds[1][0], overlay.bounds[0][1]]
-                      ]}
-                      pathOptions={{ 
-                        color: '#facc15', 
-                        weight: 3, 
-                        fill: false, 
-                        dashArray: '10, 10',
-                        opacity: 1
-                      }}
-                    />
-                  </React.Fragment>
-                ))}
+                      return (
+                        <React.Fragment key={`discovered-group-${gridRef}`}>
+                          <Polygon 
+                            positions={bestTile.corners}
+                            eventHandlers={{
+                              click: () => !isAnyDownloaded && handleToggleTileSelection(selectedTile.id)
+                            }}
+                            pathOptions={{
+                              color: isAnyDownloaded ? '#10b981' : (isAnySelected ? '#3b82f6' : '#facc15'),
+                              weight: isAnySelected ? 3 : 2,
+                              fill: true,
+                              fillOpacity: 0.05,
+                              dashArray: isAnySelected ? '' : '5, 5'
+                            }}
+                          />
+                          <Marker 
+                            key={`marker-group-${gridRef}`}
+                            position={[bestTile.bounds.maxLat, bestTile.bounds.minLng]} 
+                            icon={L.divIcon({ 
+                              className: 'bg-transparent border-none', 
+                              html: `<div class="text-[10px] font-bold text-white whitespace-nowrap" style="text-shadow: 1px 1px 2px black; margin-top: 2px; margin-left: 2px;">${gridRef}<br/>${selectedTile.resolution}m</div>`,
+                              iconSize: [0, 0],
+                              iconAnchor: [0, 0]
+                            })}
+                            interactive={false}
+                          />
+                        </React.Fragment>
+                      );
+                    })}
+                    {Object.entries(activeGeoTiffOverlays).map(([id, overlay]) => (
+                      <React.Fragment key={`overlay-${id}`}>
+                        {overlay.dataUrl && (
+                        <ImageOverlay
+                          key={`img-${id}-${(overlay as any).timestamp || 'initial'}`}
+                          url={overlay.dataUrl}
+                          bounds={overlay.bounds}
+                          opacity={geoTiffOpacities[id] ?? 0.6}
+                          zIndex={1000}
+                          pane="overlayPane"
+                        />
+                        )}
+                        <Polygon 
+                          key={`poly-${id}`}
+                          positions={overlay.corners || [
+                            [overlay.bounds[0][0], overlay.bounds[0][1]],
+                            [overlay.bounds[0][0], overlay.bounds[1][1]],
+                            [overlay.bounds[1][0], overlay.bounds[1][1]],
+                            [overlay.bounds[1][0], overlay.bounds[0][1]]
+                          ]}
+                          pathOptions={{ 
+                            color: '#facc15', 
+                            weight: 3, 
+                            fill: false, 
+                            dashArray: '10, 10',
+                            opacity: 1
+                          }}
+                        />
+                      </React.Fragment>
+                    ))}
+                  </>
+                )}
                 {showPlanningKml && planningKmlTracks.filter(feat => {
                   if (feat.playerType) {
                     const key = `playerType:${feat.playerType}`;
@@ -5193,40 +5232,29 @@ const App: React.FC = () => {
                   </>
                 )}
               </div>
-              {(mapStyle === 'LiDAR DTM' || isPlanningSession) && (
-                <div className="pointer-events-none mt-1 flex justify-center">
-                  {currentZoom < 10 ? (
-                    <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl">
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-blue-400">Zoom in for LiDAR</span>
-                    </div>
-                  ) : lidarStatus === 'geotiff' ? (
-                    <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
-                      <CheckCircle2 size={10} className="text-emerald-400" />
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">GeoTIFF Active</span>
-                    </div>
-                  ) : lidarStatus === 'offline' ? (
-                    <div className="bg-blue-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
-                      <div className="w-2 h-2 bg-blue-400 rounded-full shadow-[0_0_8px_rgba(96,165,250,0.6)]" />
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-blue-400">Offline LiDAR</span>
-                    </div>
-                  ) : (lidarLayerLoading || lidarStatus === 'loading') ? (
-                    <div className="bg-slate-900/80 backdrop-blur-md border border-blue-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl">
-                      <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-ping" />
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-blue-400">Loading LiDAR...</span>
-                    </div>
-                  ) : lidarStatus === 'error' ? (
-                    <div className="bg-rose-900/80 backdrop-blur-md border border-rose-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
-                      <AlertTriangle size={10} className="text-rose-400" />
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-rose-400">LiDAR Unavailable</span>
-                    </div>
-                  ) : lidarStatus === 'available' ? (
-                    <div className="bg-emerald-900/80 backdrop-blur-md border border-emerald-500/30 px-4 py-1.5 rounded-full flex items-center gap-3 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowLidarDebug(true)}>
-                      <CheckCircle2 size={10} className="text-emerald-400" />
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">LiDAR Active</span>
-                    </div>
-                  ) : null}
-                </div>
-              )}
+              <div className="pointer-events-none mt-1 flex justify-center">
+                {mapLayerMode === 'satellite' ? (
+                  <div className="bg-slate-900/80 backdrop-blur-md border border-white/10 px-4 py-1.5 rounded-full flex items-center gap-2.5 shadow-2xl">
+                    <div className="w-2 h-2 bg-blue-400 rounded-full" />
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-slate-300">1) Satellite Imagery</span>
+                  </div>
+                ) : mapLayerMode === 'satellite_geotiff' ? (
+                  <div className="bg-emerald-950/80 backdrop-blur-md border border-emerald-500/40 px-4 py-1.5 rounded-full flex items-center gap-2.5 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowTerrainManager(true)}>
+                    <CheckCircle2 size={11} className="text-emerald-400" />
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">2) Satellite + GeoTIFF</span>
+                  </div>
+                ) : mapLayerMode === 'osm' ? (
+                  <div className="bg-slate-900/80 backdrop-blur-md border border-yellow-500/30 px-4 py-1.5 rounded-full flex items-center gap-2.5 shadow-2xl">
+                    <div className="w-2 h-2 bg-yellow-400 rounded-full" />
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-yellow-300">3) OSM Imagery</span>
+                  </div>
+                ) : (
+                  <div className="bg-emerald-950/80 backdrop-blur-md border border-emerald-500/40 px-4 py-1.5 rounded-full flex items-center gap-2.5 shadow-2xl pointer-events-auto cursor-pointer" onClick={() => setShowTerrainManager(true)}>
+                    <CheckCircle2 size={11} className="text-emerald-400" />
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-300">4) OSM + GeoTIFF</span>
+                  </div>
+                )}
+              </div>
             </div>
             {showPivotMenu && (
               <div className="absolute inset-x-0 bottom-[160px] z-[1010] p-4 flex flex-col gap-3 items-center animate-in slide-in-from-bottom duration-200 pointer-events-none">
