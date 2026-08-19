@@ -189,13 +189,14 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
     // Check cache first to avoid slamming the network/services
     const preciseKey = `${lat.toFixed(5)},${lng.toFixed(5)}`;
     if (elevationCache.current.has(preciseKey)) {
-      return elevationCache.current.get(preciseKey) ?? null;
+      const cached = elevationCache.current.get(preciseKey);
+      if (cached !== null && cached !== undefined) return cached;
     }
 
     // 1. Check offline GeoTIFF data first (highest priority)
     try {
       const offlineElev = await lidarGeoTiffService.getElevation(lat, lng);
-      if (offlineElev !== null) {
+      if (offlineElev !== null && offlineElev !== undefined) {
         elevationCache.current.set(preciseKey, offlineElev);
         return offlineElev;
       }
@@ -203,55 +204,48 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       console.error('[LiDAR] Failed to read elevation from GeoTIFF in report', e);
     }
 
-    // If offline GeoTIFFs are loaded, do not stall on network calls for missing tile/gap points;
-    // local interpolation will smoothly bridge between valid GeoTIFF points & GPS anchors.
-    if (lidarGeoTiffService.hasLoadedTiffs() || onlineOutageRef.current) {
-      elevationCache.current.set(preciseKey, null);
-      return null;
-    }
-
     // 2. Fallback to Online API with 1.5-second fast-fail timeout protection
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1500);
+    if (!onlineOutageRef.current) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1500);
 
-      const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`, {
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
+        const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`, {
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
 
-      const contentType = response.headers.get('content-type');
-      if (!response.ok || !contentType || !contentType.includes('application/json')) {
-        if (response.status === 502 || response.status === 504 || response.status === 404) {
-          // If upstream is returning 502/504, flag outage for current profile batch
-          if (response.status >= 500) onlineOutageRef.current = true;
+        const contentType = response.headers.get('content-type');
+        if (response.ok && contentType && contentType.includes('application/json')) {
+          const data = await response.json();
+          
+          let elevation: number | null = null;
+          // Handle new JNCC WCS format
+          if (data && data.elevation !== undefined) {
+            const val = parseFloat(String(data.elevation).trim());
+            if (!isNaN(val)) elevation = val;
+          }
+          
+          // Fallback for old ArcGIS format
+          if (elevation === null && data && data.results && data.results.length > 0) {
+            const res = data.results[0];
+            const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
+            if (!isNaN(val)) elevation = val;
+          }
+
+          if (elevation !== null) {
+            elevationCache.current.set(preciseKey, elevation);
+            return elevation;
+          }
+        } else if (response.status >= 500) {
+          onlineOutageRef.current = true;
         }
-        elevationCache.current.set(preciseKey, null);
-        return null;
+      } catch (e) {
+        onlineOutageRef.current = true;
       }
-      const data = await response.json();
-      
-      let elevation: number | null = null;
-      // Handle new JNCC WCS format
-      if (data && data.elevation !== undefined) {
-        const val = parseFloat(String(data.elevation).trim());
-        if (!isNaN(val)) elevation = val;
-      }
-      
-      // Fallback for old ArcGIS format
-      if (elevation === null && data && data.results && data.results.length > 0) {
-        const res = data.results[0];
-        const val = parseFloat(res.value || res.attributes?.['Pixel Value'] || res.attributes?.['Value'] || res.attributes?.['value'] || res.attributes?.['ST_Elevation']);
-        if (!isNaN(val)) elevation = val;
-      }
-
-      elevationCache.current.set(preciseKey, elevation);
-      return elevation;
-    } catch (e) {
-      onlineOutageRef.current = true;
-      elevationCache.current.set(preciseKey, null);
-      return null;
     }
+
+    return null;
   };
 
   const generateProfile = async (record: SavedRecord) => {
@@ -267,22 +261,27 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       setIsTiffReady(true);
       
       const getAnchors = (forScratch: boolean): GeoPoint[] => {
-        const startPoint = record.raterPathPoints?.[0] || record.points?.[0];
-        const endPoint = record.raterPathPoints?.[record.raterPathPoints.length - 1] || record.points?.[record.points?.length - 1];
-        if (!startPoint || !endPoint) return [];
+        const fullPoints = (record.raterPathPoints && record.raterPathPoints.length > 0) ? record.raterPathPoints : (record.points || []);
+        if (fullPoints.length < 2) return [];
 
         const sortedPivots = [...(record.pivotPoints || [])].sort((a, b) => a.point.timestamp - b.point.timestamp);
         
-        let anchors: GeoPoint[] = [startPoint];
-        for (const pivot of sortedPivots) {
-          if (forScratch) {
-            if (pivot.type === 'common' || pivot.type === 'scratch_cut') anchors.push(pivot.point);
-          } else { 
-            if (pivot.type === 'common' || pivot.type === 'bogoy_round') anchors.push(pivot.point);
+        // If specific rating pivots exist (e.g. scratch cut vs bogey round), use pivot routing
+        if (sortedPivots.length > 0) {
+          let anchors: GeoPoint[] = [fullPoints[0]];
+          for (const pivot of sortedPivots) {
+            if (forScratch) {
+              if (pivot.type === 'common' || pivot.type === 'scratch_cut') anchors.push(pivot.point);
+            } else { 
+              if (pivot.type === 'common' || pivot.type === 'bogoy_round') anchors.push(pivot.point);
+            }
           }
+          anchors.push(fullPoints[fullPoints.length - 1]);
+          return anchors;
         }
-        anchors.push(endPoint);
-        return anchors;
+
+        // If no pivot metadata exists (standard KML track), follow the full polyline of the fairway
+        return fullPoints;
       };
 
       const processAnchors = async (anchors: GeoPoint[]): Promise<ProfilePoint[]> => {
@@ -335,13 +334,9 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             stepsData.push({ step, t, lat, lng, stepDistMetres, alt: null });
           }
 
-          // Fetch LiDAR elevations in parallel batches of 8
-          const BATCH_SIZE = 8;
-          for (let b = 0; b < stepsData.length; b += BATCH_SIZE) {
-            const batch = stepsData.slice(b, b + BATCH_SIZE);
-            await Promise.all(batch.map(async item => {
-              item.alt = await fetchLidar(item.lat, item.lng);
-            }));
+          // Fetch elevations sequentially to ensure zero read collisions
+          for (let s = 0; s < stepsData.length; s++) {
+            stepsData[s].alt = await fetchLidar(stepsData[s].lat, stepsData[s].lng);
           }
 
           // Interpolate missing intermediate elevations using nearest valid LiDAR neighbors

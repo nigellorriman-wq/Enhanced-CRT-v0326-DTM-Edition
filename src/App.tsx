@@ -3535,46 +3535,53 @@ const App: React.FC = () => {
     };
     checkPermission();
 
-    // Only auto-locate on mount or reset if we are NOT in a planning session
-    if (!isPlanningSession) {
+    const isPlanningOrReport = isPlanningSession || view === 'planning_report' || view === 'report';
+
+    // Only auto-locate on mount or reset if we are NOT in planning mode or generating reports
+    if (!isPlanningOrReport) {
       navigator.geolocation.getCurrentPosition(handleUpdate, 
         () => navigator.geolocation.getCurrentPosition(handleUpdate, handleError, coarseOptions), 
         options
       );
     }
 
-    const watch = navigator.geolocation.watchPosition(
-      async (p) => {
-        setGpsError(null);
-        if (isFollowing && !isPlanningSession) {
-          handleUpdate(p);
-          // Always try to fetch LiDAR elevation when following to improve GNSS altitude
-          const currentTs = Date.now();
-          lidarFetchRef.current = currentTs;
-          const lidarAlt = await fetchLidarElevation(p.coords.latitude, p.coords.longitude);
-          if (lidarFetchRef.current === currentTs && lidarAlt !== null) {
-            const LIDAR_ACCURACY = 0.2;
-            setPos(prev => {
-              if (!prev || prev.timestamp > currentTs || !isFollowing) return prev;
-              if (prev.altAccuracy === null || prev.altAccuracy > LIDAR_ACCURACY) {
-                return { ...prev, alt: lidarAlt, altAccuracy: LIDAR_ACCURACY, source: 'LiDAR' };
-              }
-              return prev;
-            });
+    let watch: number | null = null;
+    if (!isPlanningOrReport) {
+      watch = navigator.geolocation.watchPosition(
+        async (p) => {
+          setGpsError(null);
+          if (isFollowing && !isPlanningOrReport) {
+            handleUpdate(p);
+            // Always try to fetch LiDAR elevation when following to improve GNSS altitude
+            const currentTs = Date.now();
+            lidarFetchRef.current = currentTs;
+            const lidarAlt = await fetchLidarElevation(p.coords.latitude, p.coords.longitude);
+            if (lidarFetchRef.current === currentTs && lidarAlt !== null) {
+              const LIDAR_ACCURACY = 0.2;
+              setPos(prev => {
+                if (!prev || prev.timestamp > currentTs || !isFollowing) return prev;
+                if (prev.altAccuracy === null || prev.altAccuracy > LIDAR_ACCURACY) {
+                  return { ...prev, alt: lidarAlt, altAccuracy: LIDAR_ACCURACY, source: 'LiDAR' };
+                }
+                return prev;
+              });
+            }
           }
-        }
-      },
-      (err) => {
-        handleError(err);
-        if (!isPlanningSession) {
-          navigator.geolocation.getCurrentPosition(handleUpdate, null, coarseOptions);
-        }
-      },
-      { ...options, timeout: 60000 }
-    );
+        },
+        (err) => {
+          handleError(err);
+          if (!isPlanningOrReport) {
+            navigator.geolocation.getCurrentPosition(handleUpdate, null, coarseOptions);
+          }
+        },
+        { ...options, timeout: 60000 }
+      );
+    }
 
-    return () => navigator.geolocation.clearWatch(watch);
-  }, [locationResetKey, isFollowing, isPlanningSession]);
+    return () => {
+      if (watch !== null) navigator.geolocation.clearWatch(watch);
+    };
+  }, [locationResetKey, isFollowing, isPlanningSession, view]);
 
   // Fix: Ensure track points are updated and start altitude is captured correctly
   useEffect(() => {

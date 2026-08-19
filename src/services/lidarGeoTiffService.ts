@@ -369,23 +369,50 @@ class LidarGeoTiffService {
       const { image, noData } = entry;
       const [minX, minY, maxX, maxY] = image.getBoundingBox();
       
-      // Convert input WGS84 lat/lng to BNG for lookup
-      const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+      // Determine CRS of the GeoTIFF by checking the magnitude of bounding box coordinates
+      let queryX = lng;
+      let queryY = lat;
+
+      if (minX >= -180 && maxX <= 180 && minY >= -90 && maxY <= 90) {
+        // Native GeoTIFF is in WGS84 Lat/Lng (EPSG:4326)
+        queryX = lng;
+        queryY = lat;
+      } else if (minX >= 50000 && maxX <= 800000 && minY >= 0 && maxY <= 1300000) {
+        // Native GeoTIFF is in British National Grid (EPSG:27700)
+        const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+        queryX = e;
+        queryY = n;
+      } else if (minX >= 100000 && maxX <= 900000 && minY >= 4000000 && maxY <= 7500000) {
+        // Native GeoTIFF is in UTM Zone 30N (EPSG:32630)
+        try {
+          const [utmE, utmN] = proj4("EPSG:4326", "+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", [lng, lat]);
+          queryX = utmE;
+          queryY = utmN;
+        } catch {
+          const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+          queryX = e;
+          queryY = n;
+        }
+      } else {
+        // Default to British National Grid (EPSG:27700)
+        const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+        queryX = e;
+        queryY = n;
+      }
       
-      // Check if point is within bounds (in BNG)
-      if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
-        // Convert BNG to pixel coordinates safely from bounding box and dimensions
+      // Check if point is within bounds
+      if (queryX >= minX && queryX <= maxX && queryY >= minY && queryY <= maxY) {
         const width = image.getWidth();
         const height = image.getHeight();
         const resX = (maxX - minX) / width;
         const resY = (maxY - minY) / height;
 
-        const x = Math.min(width - 1, Math.max(0, Math.floor((e - minX) / resX)));
-        const y = Math.min(height - 1, Math.max(0, Math.floor((maxY - n) / resY)));
+        const x = Math.min(width - 1, Math.max(0, Math.floor((queryX - minX) / resX)));
+        const y = Math.min(height - 1, Math.max(0, Math.floor((maxY - queryY) / resY)));
 
         if (x >= 0 && x < width && y >= 0 && y < height) {
           try {
-            const window = [x, y, x + 1, y + 1];
+            const window = [x, y, Math.min(width, x + 1), Math.min(height, y + 1)];
             const rasters = await image.readRasters({ window });
             if (rasters) {
               const numBands = Array.isArray(rasters) ? rasters.length : 1;
@@ -393,44 +420,19 @@ class LidarGeoTiffService {
               // Try each band until we find a valid elevation
               for (let b = 0; b < numBands; b++) {
                 const data = Array.isArray(rasters) ? rasters[b] : rasters;
-                if (data.length > 0) {
-                  const elevation = data[0];
-                  console.log(`[LiDAR] Raw elevation at ${lat}, ${lng} in tile ${id} (Band ${b}): ${elevation} (NoData: ${noData})`);
+                if (data && data.length > 0) {
+                  const elevation = Number(data[0]);
                   
                   if (this.isValidElevation(elevation, noData)) {
-                    console.log(`[LiDAR] SUCCESS: Offline elevation for ${lat.toFixed(6)}, ${lng.toFixed(6)} is ${elevation.toFixed(2)}m (Source: ${id}, Band: ${b})`);
                     return elevation;
                   }
                 }
               }
-              
-              console.log(`[LiDAR] No valid elevation found in any of the ${numBands} bands at ${lat}, ${lng} in tile ${id}`);
             }
           } catch (e) {
             console.error('[LiDAR] Error reading raster for elevation', e);
           }
-        } else {
-          console.log(`[LiDAR] Pixel out of range for ${lat}, ${lng} in tile ${id}: x=${x}/${width}, y=${y}/${height}`);
         }
-      }
-    }
-
-    if (this.loadedTiffs.size > 0) {
-      // Check if we actually found any tile covering this area (even if it had NoData)
-      const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
-      let tileFound = false;
-      for (const entry of this.loadedTiffs.values()) {
-        const [minX, minY, maxX, maxY] = entry.image.getBoundingBox();
-        if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
-          tileFound = true;
-          break;
-        }
-      }
-      
-      if (tileFound) {
-        console.log(`[LiDAR] No valid elevation found in any offline tile covering ${lat}, ${lng}`);
-      } else {
-        console.log(`[LiDAR] No offline tile found covering ${lat}, ${lng}`);
       }
     }
     
