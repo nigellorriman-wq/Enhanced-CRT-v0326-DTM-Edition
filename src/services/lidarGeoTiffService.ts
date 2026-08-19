@@ -23,27 +23,55 @@ export interface OfflineGeoTiff {
 }
 
 class LidarGeoTiffService {
-  private loadedTiffs: Map<string, { tiff: any; image: any; pool: any; minMax?: { min: number; max: number }; noData?: number | null }> = new Map();
+  private loadedTiffs: Map<string, { 
+    tiff: any; 
+    image: any; 
+    pool: any; 
+    minMax?: { min: number; max: number }; 
+    noData?: number | null;
+    cachedRasters?: any;
+    readPromise?: Promise<any>;
+  }> = new Map();
   private globalAltitudeRange: { min: number; max: number } | null = null;
 
   private isValidElevation(val: number, noData?: number | null): boolean {
     if (val === null || val === undefined || isNaN(val)) return false;
     
-    // Exact match for common NoData values
-    if (val === -9999 || val === -3.4028234663852886e+38) return false;
+    // Exact match for common NoData sentinels in GDAL / GIS exports
+    if (val === -9999 || val === -3.4028234663852886e+38 || val === 3.4028234663852886e+38) return false;
+    if (val <= -9999 || val >= 99999) return false;
     
-    // Match against metadata NoData value
-    if (noData !== undefined && noData !== null) {
-      // Use a small epsilon for float comparison
+    // If noData metadata is explicitly non-zero (avoid treating 0m coastal elevations as NoData)
+    if (noData !== undefined && noData !== null && noData !== 0) {
       if (Math.abs(val - noData) < 0.0001) return false;
     }
     
-    // Extreme values that are physically impossible for Scottish terrain
-    // (Lowest point is sea level, highest is 1344m)
-    // We allow a bit of range for bathymetry or slight errors, but -10000m is definitely NoData
-    if (val < -10000 || val > 10000) return false;
-    
     return true;
+  }
+
+  private async ensureRasters(entry: { 
+    tiff: any; 
+    image: any; 
+    pool: any; 
+    minMax?: { min: number; max: number }; 
+    noData?: number | null;
+    cachedRasters?: any;
+    readPromise?: Promise<any>;
+  }): Promise<any> {
+    if (entry.cachedRasters) return entry.cachedRasters;
+    if (entry.readPromise) return entry.readPromise;
+
+    entry.readPromise = (async () => {
+      try {
+        const rasters = await entry.image.readRasters();
+        entry.cachedRasters = rasters;
+        return rasters;
+      } finally {
+        entry.readPromise = undefined;
+      }
+    })();
+
+    return entry.readPromise;
   }
 
   setGlobalAltitudeRange(min: number, max: number) {
@@ -70,9 +98,9 @@ class LidarGeoTiffService {
 
     if (entry.minMax) return entry.minMax;
 
-    const { image, noData } = entry;
+    const { noData } = entry;
     try {
-      const rasters = await image.readRasters();
+      const rasters = await this.ensureRasters(entry);
       if (!rasters) return null;
       
       const numBands = Array.isArray(rasters) ? rasters.length : 1;
@@ -92,9 +120,7 @@ class LidarGeoTiffService {
           }
         }
         
-        console.log(`[LiDAR] Stats for ${id} (Band ${b}): Valid pixels: ${validCount}/${data.length}, Min: ${min}, Max: ${max}, NoData: ${noData}`);
-        
-        if (validCount > 0) break; // Found data in this band, stop looking
+        if (validCount > 0) break;
       }
       
       if (min !== Infinity) {
@@ -234,11 +260,35 @@ class LidarGeoTiffService {
     const noData = image.getGDALNoData();
     const [minX, minY, maxX, maxY] = image.getBoundingBox();
     
-    // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
-    const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
-    const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
-    const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
-    const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+    // Check CRS of image bounding box
+    let p1Lng: number, p1Lat: number, p2Lng: number, p2Lat: number, p3Lng: number, p3Lat: number, p4Lng: number, p4Lat: number;
+
+    if (minX >= -180 && maxX <= 180 && minY >= -90 && maxY <= 90) {
+      // Native WGS84
+      p1Lng = minX; p1Lat = minY;
+      p2Lng = maxX; p2Lat = minY;
+      p3Lng = maxX; p3Lat = maxY;
+      p4Lng = minX; p4Lat = maxY;
+    } else if (minX >= 100000 && maxX <= 900000 && minY >= 4000000 && maxY <= 7500000) {
+      // UTM Zone 30N
+      try {
+        [p1Lng, p1Lat] = proj4("+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", "EPSG:4326", [minX, minY]);
+        [p2Lng, p2Lat] = proj4("+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", "EPSG:4326", [maxX, minY]);
+        [p3Lng, p3Lat] = proj4("+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", "EPSG:4326", [maxX, maxY]);
+        [p4Lng, p4Lat] = proj4("+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", "EPSG:4326", [minX, maxY]);
+      } catch {
+        [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+        [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+        [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+        [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+      }
+    } else {
+      // Default: EPSG:27700 (British National Grid)
+      [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+      [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+      [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+      [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+    }
     
     const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
     const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
@@ -412,17 +462,13 @@ class LidarGeoTiffService {
 
         if (x >= 0 && x < width && y >= 0 && y < height) {
           try {
-            const window = [x, y, Math.min(width, x + 1), Math.min(height, y + 1)];
-            const rasters = await image.readRasters({ window });
+            const rasters = await this.ensureRasters(entry);
             if (rasters) {
               const numBands = Array.isArray(rasters) ? rasters.length : 1;
-              
-              // Try each band until we find a valid elevation
               for (let b = 0; b < numBands; b++) {
                 const data = Array.isArray(rasters) ? rasters[b] : rasters;
-                if (data && data.length > 0) {
-                  const elevation = Number(data[0]);
-                  
+                if (data) {
+                  const elevation = Number(data[y * width + x]);
                   if (this.isValidElevation(elevation, noData)) {
                     return elevation;
                   }
@@ -545,12 +591,35 @@ class LidarGeoTiffService {
       console.log(`[LiDAR] Downsampling overlay for ${id} from original size to ${width}x${height} (scale: ${sampleScale.toFixed(2)})`);
     }
     
-    // Convert all 4 BNG corners back to WGS84 for Leaflet overlay
-    // This ensures we use the full envelope to eliminate gaps between tiles
-    const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
-    const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
-    const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
-    const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+    // Determine WGS84 corners and bounds from native GeoTIFF coordinates
+    let p1Lng: number, p1Lat: number, p2Lng: number, p2Lat: number, p3Lng: number, p3Lat: number, p4Lng: number, p4Lat: number;
+
+    if (minX >= -180 && maxX <= 180 && minY >= -90 && maxY <= 90) {
+      // Native WGS84
+      p1Lng = minX; p1Lat = minY;
+      p2Lng = maxX; p2Lat = minY;
+      p3Lng = maxX; p3Lat = maxY;
+      p4Lng = minX; p4Lat = maxY;
+    } else if (minX >= 100000 && maxX <= 900000 && minY >= 4000000 && maxY <= 7500000) {
+      // UTM Zone 30N
+      try {
+        [p1Lng, p1Lat] = proj4("+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", "EPSG:4326", [minX, minY]);
+        [p2Lng, p2Lat] = proj4("+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", "EPSG:4326", [maxX, minY]);
+        [p3Lng, p3Lat] = proj4("+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", "EPSG:4326", [maxX, maxY]);
+        [p4Lng, p4Lat] = proj4("+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", "EPSG:4326", [minX, maxY]);
+      } catch {
+        [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+        [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+        [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+        [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+      }
+    } else {
+      // Default: EPSG:27700 (British National Grid)
+      [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+      [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+      [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+      [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+    }
     
     const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
     const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
@@ -560,8 +629,7 @@ class LidarGeoTiffService {
     // Read all rasters
     let rasters;
     try {
-      console.log(`[LiDAR] Reading rasters for ${id} (${width}x${height})...`);
-      rasters = await image.readRasters({ width, height });
+      rasters = await this.ensureRasters(entry);
       
       if (!rasters) {
         console.error(`[LiDAR] No rasters found for ${id}`);
@@ -604,8 +672,7 @@ class LidarGeoTiffService {
       }
 
       if (validCount === 0) {
-        const firstFew = Array.from(data.slice(0, 10));
-        console.warn(`[LiDAR] No valid elevation data found in any of the ${numBands} bands for ${id} (all pixels are NoData). First 10 values: ${JSON.stringify(firstFew)}`);
+        console.warn(`[LiDAR] No valid elevation data found in any of the ${numBands} bands for ${id}`);
         return null;
       }
 
@@ -614,7 +681,6 @@ class LidarGeoTiffService {
       let max = this.globalAltitudeRange?.max ?? localMax;
 
       if (min === max) {
-        console.log(`[LiDAR] Min and Max are equal (${min}), using small offset for visualization`);
         max = min + 1;
       }
 
@@ -631,41 +697,19 @@ class LidarGeoTiffService {
       const imageData = ctx.createImageData(width, height);
       const d = imageData.data;
 
-      console.log(`[LiDAR] Generating overlay for ${id} (Band ${activeBand}). Local range: ${localMin.toFixed(1)}m - ${localMax.toFixed(1)}m. Using range: ${min.toFixed(1)}m - ${max.toFixed(1)}m`);
+      // Pre-calculate color lookup table (256 levels) for performance
+      const lut = new Uint8Array(256 * 3);
+      for (let i = 0; i < 256; i++) {
+        const color = this.getColorForHeight(i / 255);
+        lut[i * 3] = color.r;
+        lut[i * 3 + 1] = color.g;
+        lut[i * 3 + 2] = color.b;
+      }
 
-    // Pre-calculate color lookup table (256 levels) for performance
-    const lut = new Uint8Array(256 * 3);
-    for (let i = 0; i < 256; i++) {
-      const color = this.getColorForHeight(i / 255);
-      lut[i * 3] = color.r;
-      lut[i * 3 + 1] = color.g;
-      lut[i * 3 + 2] = color.b;
-    }
-
-    // Calculate BNG coordinates for the canvas corners (the envelope)
-    // to allow for fast affine interpolation of BNG coordinates across the canvas.
-    const [e_nw, n_nw] = proj4("EPSG:4326", "EPSG:27700", [minLng, maxLat]);
-    const [e_ne, n_ne] = proj4("EPSG:4326", "EPSG:27700", [maxLng, maxLat]);
-    const [e_sw, n_sw] = proj4("EPSG:4326", "EPSG:27700", [minLng, minLat]);
-    
-    const de_col = (e_ne - e_nw) / width;
-    const dn_col = (n_ne - n_nw) / width;
-    const de_row = (e_sw - e_nw) / height;
-    const dn_row = (n_sw - n_nw) / height;
-
-    const resX = (maxX - minX) / width;
-    const resY = (maxY - minY) / height;
-
-    for (let r = 0; r < height; r++) {
-      let curr_e = e_nw + r * de_row;
-      let curr_n = n_nw + r * dn_row;
-      for (let c = 0; c < width; c++) {
-        const x = Math.floor((curr_e - minX) / resX);
-        const y = Math.floor((maxY - curr_n) / resY);
-        const canvasIdx = (r * width + c) * 4;
-        
-        if (x >= 0 && x < width && y >= 0 && y < height) {
-          const tiffIdx = y * width + x;
+      for (let r = 0; r < height; r++) {
+        for (let c = 0; c < width; c++) {
+          const tiffIdx = r * width + c;
+          const canvasIdx = (r * width + c) * 4;
           const val = data[tiffIdx];
           
           if (!this.isValidElevation(val, noData)) {
@@ -678,14 +722,8 @@ class LidarGeoTiffService {
             d[canvasIdx + 2] = lut[lutIdx + 2];
             d[canvasIdx + 3] = 255;
           }
-        } else {
-          d[canvasIdx + 3] = 0; // Transparent (outside BNG tile bounds)
         }
-        
-        curr_e += de_col;
-        curr_n += dn_col;
       }
-    }
 
       ctx.putImageData(imageData, 0, 0);
       const dataUrl = canvas.toDataURL('image/png');
@@ -696,8 +734,8 @@ class LidarGeoTiffService {
         const allKeys = await keys();
         const key = allKeys.find(k => typeof k === 'string' && k.endsWith(id));
         if (key) {
-          const data = await get<OfflineGeoTiff>(key);
-          if (data?.corners) finalCorners = data.corners;
+          const stored = await get<OfflineGeoTiff>(key);
+          if (stored?.corners) finalCorners = stored.corners;
         }
       } catch (e) {
         // Fallback to calculated corners
@@ -716,20 +754,15 @@ class LidarGeoTiffService {
   }
 
   public getColorForHeight(t: number) {
-    // Refined color ramp for golf course terrain (more stops in lower range for detail)
+    // High-contrast terrain hypsometric color ramp for distinct altitude visualization
     const stops = [
-      { t: 0.00, r: 0, g: 68, b: 27 },      // Deep Forest Green
-      { t: 0.05, r: 0, g: 109, b: 44 },     // Dark Green
-      { t: 0.10, r: 35, g: 139, b: 69 },    // Forest Green
-      { t: 0.15, r: 65, g: 171, b: 93 },    // Grass Green
-      { t: 0.20, r: 116, g: 196, b: 118 },  // Light Grass Green
-      { t: 0.30, r: 161, g: 217, b: 155 },  // Pale Green
-      { t: 0.45, r: 199, g: 233, b: 192 },  // Very Pale Green
-      { t: 0.60, r: 255, g: 255, b: 178 },  // Pale Yellow
-      { t: 0.75, r: 254, g: 204, b: 92 },   // Soft Orange/Yellow
-      { t: 0.85, r: 253, g: 141, b: 60 },   // Orange
-      { t: 0.95, r: 189, g: 0, b: 38 },     // Reddish Brown
-      { t: 1.00, r: 255, g: 255, b: 255 }   // White (Peak)
+      { t: 0.00, r: 24, g: 60, b: 180 },    // Deep Blue (lowest / sea / depressions)
+      { t: 0.15, r: 0, g: 190, b: 200 },    // Bright Cyan (low ground)
+      { t: 0.32, r: 34, g: 180, b: 68 },    // Vibrant Green (lower slope / fairway)
+      { t: 0.50, r: 245, g: 220, b: 30 },   // Vivid Yellow / Lime (mid elevations)
+      { t: 0.70, r: 250, g: 130, b: 20 },   // Warm Orange (higher terrain / hills)
+      { t: 0.88, r: 220, g: 30, b: 40 },    // Crimson Red (high ridges)
+      { t: 1.00, r: 255, g: 255, b: 255 }   // Bright White (highest peaks)
     ];
 
     // Clamp t just in case

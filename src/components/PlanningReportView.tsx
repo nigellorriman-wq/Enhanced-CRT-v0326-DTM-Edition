@@ -174,7 +174,10 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
 
   useEffect(() => {
     const loadTiffs = async () => {
-      await lidarGeoTiffService.loadAll();
+      const tiffs = await lidarGeoTiffService.loadAll();
+      for (const tiff of tiffs) {
+        await lidarGeoTiffService.getMinMax(tiff.id);
+      }
       setIsTiffReady(true);
     };
     loadTiffs();

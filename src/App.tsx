@@ -3135,30 +3135,6 @@ const App: React.FC = () => {
     }
   }, [mapLayerMode, isPlanningSession]);
 
-  // Auto-generate overlays for offline GeoTIFFs when in GeoTIFF overlay modes
-  useEffect(() => {
-    if (mapLayerMode === 'satellite_geotiff' || mapLayerMode === 'osm_geotiff') {
-      if (offlineGeoTiffs.length > 0 && Object.keys(activeGeoTiffOverlays).length === 0) {
-        (async () => {
-          const newOverlays: Record<string, any> = {};
-          for (const tiff of offlineGeoTiffs) {
-            try {
-              const overlay = await lidarGeoTiffService.generateOverlay(tiff.id);
-              if (overlay) {
-                newOverlays[tiff.id] = overlay;
-              }
-            } catch (e) {
-              console.error('Error auto-generating GeoTIFF overlay:', e);
-            }
-          }
-          if (Object.keys(newOverlays).length > 0) {
-            setActiveGeoTiffOverlays(prev => ({ ...prev, ...newOverlays }));
-          }
-        })();
-      }
-    }
-  }, [mapLayerMode, offlineGeoTiffs]);
-
   const cycleMapLayerMode = () => {
     setMapLayerMode(prev => {
       switch (prev) {
@@ -3374,6 +3350,8 @@ const App: React.FC = () => {
       });
     } else {
       setIsOverlayLoading(prev => ({ ...prev, [id]: true }));
+      // Switch mapLayerMode to a geotiff mode so overlay is visible
+      setMapLayerMode(prev => (prev === 'osm' ? 'osm_geotiff' : 'satellite_geotiff'));
       try {
         console.log(`[LiDAR] Generating overlay for ${id}...`);
         const overlay = await lidarGeoTiffService.generateOverlay(id);
@@ -3438,6 +3416,9 @@ const App: React.FC = () => {
     // Load offline GeoTIFFs
     lidarGeoTiffService.loadAll().then(tiffs => {
       setOfflineGeoTiffs(tiffs);
+      if (tiffs.length > 0) {
+        setMapLayerMode(prev => (prev === 'osm' || prev === 'osm_geotiff') ? 'osm_geotiff' : 'satellite_geotiff');
+      }
     });
 
     const handleUpdate = (p: GeolocationPosition) => {
@@ -3502,19 +3483,20 @@ const App: React.FC = () => {
     };
 
     const handleError = (error: GeolocationPositionError) => {
-      console.error("Geolocation error:", error);
-      switch(error.code) {
-        case error.PERMISSION_DENIED:
+      const errorMsg = error?.message || (error?.code === 1 ? 'Permission denied' : error?.code === 2 ? 'Position unavailable' : error?.code === 3 ? 'Timeout' : 'Unknown error');
+      console.warn("Geolocation notice:", errorMsg);
+      switch(error?.code) {
+        case 1:
           setGpsError("Permission Denied: Please allow location access in your browser settings or open the app in a new tab.");
           break;
-        case error.POSITION_UNAVAILABLE:
+        case 2:
           setGpsError("Position Unavailable: GPS signal might be weak.");
           break;
-        case error.TIMEOUT:
+        case 3:
           setGpsError("Timeout: GPS request timed out.");
           break;
         default:
-          setGpsError("An unknown error occurred with GPS.");
+          setGpsError("GPS signal currently unavailable.");
       }
     };
 
@@ -4485,80 +4467,76 @@ const App: React.FC = () => {
                     pathOptions={{ color: '#10b981', weight: 2, fillOpacity: 0.1 }} 
                   />
                 )}
-                {(mapLayerMode === 'satellite_geotiff' || mapLayerMode === 'osm_geotiff') && (
-                  <>
-                    {Array.from(groupedDiscoveredTiles.entries()).map(([gridRef, tiles]) => {
-                      // Pick the best tile to represent the group (prioritizing highest phase, then resolution)
-                      const bestTile = [...tiles].sort((a, b) => {
-                        if (b.phase !== a.phase) return b.phase - a.phase;
-                        return a.resolution - b.resolution;
-                      })[0];
-                      
-                      const isAnySelected = tiles.some(t => selectedTileIds.has(t.id));
-                      const isAnyDownloaded = tiles.some(t => offlineGeoTiffs.some(ot => ot.id === t.url));
-                      const selectedTile = tiles.find(t => selectedTileIds.has(t.id)) || bestTile;
+                {(mapLayerMode === 'satellite_geotiff' || mapLayerMode === 'osm_geotiff') && Array.from(groupedDiscoveredTiles.entries()).map(([gridRef, tiles]) => {
+                  // Pick the best tile to represent the group (prioritizing highest phase, then resolution)
+                  const bestTile = [...tiles].sort((a, b) => {
+                    if (b.phase !== a.phase) return b.phase - a.phase;
+                    return a.resolution - b.resolution;
+                  })[0];
+                  
+                  const isAnySelected = tiles.some(t => selectedTileIds.has(t.id));
+                  const isAnyDownloaded = tiles.some(t => offlineGeoTiffs.some(ot => ot.id === t.url));
+                  const selectedTile = tiles.find(t => selectedTileIds.has(t.id)) || bestTile;
 
-                      return (
-                        <React.Fragment key={`discovered-group-${gridRef}`}>
-                          <Polygon 
-                            positions={bestTile.corners}
-                            eventHandlers={{
-                              click: () => !isAnyDownloaded && handleToggleTileSelection(selectedTile.id)
-                            }}
-                            pathOptions={{
-                              color: isAnyDownloaded ? '#10b981' : (isAnySelected ? '#3b82f6' : '#facc15'),
-                              weight: isAnySelected ? 3 : 2,
-                              fill: true,
-                              fillOpacity: 0.05,
-                              dashArray: isAnySelected ? '' : '5, 5'
-                            }}
-                          />
-                          <Marker 
-                            key={`marker-group-${gridRef}`}
-                            position={[bestTile.bounds.maxLat, bestTile.bounds.minLng]} 
-                            icon={L.divIcon({ 
-                              className: 'bg-transparent border-none', 
-                              html: `<div class="text-[10px] font-bold text-white whitespace-nowrap" style="text-shadow: 1px 1px 2px black; margin-top: 2px; margin-left: 2px;">${gridRef}<br/>${selectedTile.resolution}m</div>`,
-                              iconSize: [0, 0],
-                              iconAnchor: [0, 0]
-                            })}
-                            interactive={false}
-                          />
-                        </React.Fragment>
-                      );
-                    })}
-                    {Object.entries(activeGeoTiffOverlays).map(([id, overlay]) => (
-                      <React.Fragment key={`overlay-${id}`}>
-                        {overlay.dataUrl && (
-                        <ImageOverlay
-                          key={`img-${id}-${(overlay as any).timestamp || 'initial'}`}
-                          url={overlay.dataUrl}
-                          bounds={overlay.bounds}
-                          opacity={geoTiffOpacities[id] ?? 0.6}
-                          zIndex={1000}
-                          pane="overlayPane"
-                        />
-                        )}
-                        <Polygon 
-                          key={`poly-${id}`}
-                          positions={overlay.corners || [
-                            [overlay.bounds[0][0], overlay.bounds[0][1]],
-                            [overlay.bounds[0][0], overlay.bounds[1][1]],
-                            [overlay.bounds[1][0], overlay.bounds[1][1]],
-                            [overlay.bounds[1][0], overlay.bounds[0][1]]
-                          ]}
-                          pathOptions={{ 
-                            color: '#facc15', 
-                            weight: 3, 
-                            fill: false, 
-                            dashArray: '10, 10',
-                            opacity: 1
-                          }}
-                        />
-                      </React.Fragment>
-                    ))}
-                  </>
-                )}
+                  return (
+                    <React.Fragment key={`discovered-group-${gridRef}`}>
+                      <Polygon 
+                        positions={bestTile.corners}
+                        eventHandlers={{
+                          click: () => !isAnyDownloaded && handleToggleTileSelection(selectedTile.id)
+                        }}
+                        pathOptions={{
+                          color: isAnyDownloaded ? '#10b981' : (isAnySelected ? '#3b82f6' : '#facc15'),
+                          weight: isAnySelected ? 3 : 2,
+                          fill: true,
+                          fillOpacity: 0.05,
+                          dashArray: isAnySelected ? '' : '5, 5'
+                        }}
+                      />
+                      <Marker 
+                        key={`marker-group-${gridRef}`}
+                        position={[bestTile.bounds.maxLat, bestTile.bounds.minLng]} 
+                        icon={L.divIcon({ 
+                          className: 'bg-transparent border-none', 
+                          html: `<div class="text-[10px] font-bold text-white whitespace-nowrap" style="text-shadow: 1px 1px 2px black; margin-top: 2px; margin-left: 2px;">${gridRef}<br/>${selectedTile.resolution}m</div>`,
+                          iconSize: [0, 0],
+                          iconAnchor: [0, 0]
+                        })}
+                        interactive={false}
+                      />
+                    </React.Fragment>
+                  );
+                })}
+                {(mapLayerMode === 'satellite_geotiff' || mapLayerMode === 'osm_geotiff') && Object.entries(activeGeoTiffOverlays).map(([id, overlay]) => (
+                  <React.Fragment key={`overlay-${id}`}>
+                    {overlay.dataUrl && (
+                    <ImageOverlay
+                      key={`img-${id}-${(overlay as any).timestamp || 'initial'}`}
+                      url={overlay.dataUrl}
+                      bounds={overlay.bounds}
+                      opacity={geoTiffOpacities[id] ?? 0.6}
+                      zIndex={1000}
+                      pane="overlayPane"
+                    />
+                    )}
+                    <Polygon 
+                      key={`poly-${id}`}
+                      positions={overlay.corners || [
+                        [overlay.bounds[0][0], overlay.bounds[0][1]],
+                        [overlay.bounds[0][0], overlay.bounds[1][1]],
+                        [overlay.bounds[1][0], overlay.bounds[1][1]],
+                        [overlay.bounds[1][0], overlay.bounds[0][1]]
+                      ]}
+                      pathOptions={{ 
+                        color: '#facc15', 
+                        weight: 3, 
+                        fill: false, 
+                        dashArray: '10, 10',
+                        opacity: 1
+                      }}
+                    />
+                  </React.Fragment>
+                ))}
                 {showPlanningKml && planningKmlTracks.filter(feat => {
                   if (feat.playerType) {
                     const key = `playerType:${feat.playerType}`;
