@@ -111,7 +111,24 @@ class LidarGeoTiffService {
    * Downloads a GeoTIFF from a URL and stores it in IndexedDB
    */
   async downloadAndStore(url: string, name: string): Promise<OfflineGeoTiff> {
-    const proxyUrl = `/api/proxy-geotiff?url=${encodeURIComponent(url)}`;
+    // Auto-normalize legacy WCS GetCoverage URLs to Scottish GeoServer WMS image/geotiff
+    let effectiveUrl = url;
+    try {
+      if (url.includes('service=WCS') || url.includes('request=GetCoverage') || url.includes('/wcs') || url.includes('srsp-ows.jncc.gov.uk')) {
+        const parsedUrl = new URL(url);
+        const coverage = parsedUrl.searchParams.get('coverage') || parsedUrl.searchParams.get('layers') || 'scotland:scotland-lidar-1-dtm';
+        const bbox = parsedUrl.searchParams.get('bbox') || '';
+        const width = parsedUrl.searchParams.get('width') || '1000';
+        const height = parsedUrl.searchParams.get('height') || '1000';
+        const crs = parsedUrl.searchParams.get('crs') || parsedUrl.searchParams.get('srs') || 'EPSG:27700';
+        
+        effectiveUrl = `https://ows.remotesensing.data.gov.scot/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=${encodeURIComponent(coverage)}&styles=&bbox=${bbox}&width=${width}&height=${height}&srs=${encodeURIComponent(crs)}&format=image/geotiff`;
+      }
+    } catch (e) {
+      effectiveUrl = url;
+    }
+
+    const proxyUrl = `/api/proxy-geotiff?url=${encodeURIComponent(effectiveUrl)}`;
     const response = await fetch(proxyUrl);
     if (!response.ok) {
       let details = response.statusText;

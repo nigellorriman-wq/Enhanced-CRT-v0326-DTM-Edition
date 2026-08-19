@@ -407,9 +407,26 @@ async function startServer() {
 
   // Proxy for GeoTIFF downloads to bypass CORS
   app.get("/api/proxy-geotiff", async (req, res) => {
-    const { url } = req.query;
+    let url = req.query.url as string | undefined;
     if (!url || typeof url !== 'string') {
       return res.status(400).json({ error: 'Missing URL' });
+    }
+
+    // Auto-normalize legacy JNCC WCS URLs or WCS GetCoverage URLs to Scottish Gov GeoServer WMS image/geotiff
+    try {
+      if (url.includes('service=WCS') || url.includes('request=GetCoverage') || url.includes('/wcs') || url.includes('srsp-ows.jncc.gov.uk')) {
+        const parsedUrl = new URL(url);
+        const coverage = parsedUrl.searchParams.get('coverage') || parsedUrl.searchParams.get('layers') || 'scotland:scotland-lidar-1-dtm';
+        const bbox = parsedUrl.searchParams.get('bbox') || '';
+        const width = parsedUrl.searchParams.get('width') || '1000';
+        const height = parsedUrl.searchParams.get('height') || '1000';
+        const crs = parsedUrl.searchParams.get('crs') || parsedUrl.searchParams.get('srs') || 'EPSG:27700';
+        
+        url = `https://ows.remotesensing.data.gov.scot/geoserver/wms?service=WMS&version=1.1.1&request=GetMap&layers=${encodeURIComponent(coverage)}&styles=&bbox=${bbox}&width=${width}&height=${height}&srs=${encodeURIComponent(crs)}&format=image/geotiff`;
+        console.log(`[Proxy API] Rewrote legacy WCS URL to WMS: ${url}`);
+      }
+    } catch (e) {
+      // Keep original url if parsing fails
     }
 
     console.log(`[Proxy API] Fetching GeoTIFF: ${url}`);
@@ -418,7 +435,7 @@ async function startServer() {
         responseType: 'arraybuffer',
         timeout: 30000,
         headers: {
-          'Accept': 'image/tiff, application/xml, text/xml, */*'
+          'Accept': 'image/tiff, image/geotiff, application/xml, text/xml, */*'
         }
       });
 
@@ -430,13 +447,13 @@ async function startServer() {
         return res.status(502).send(text);
       }
 
-      res.set('Content-Type', contentType || 'image/tiff');
+      res.set('Content-Type', contentType || 'image/geotiff');
       if (response.headers['content-length']) {
         res.set('Content-Length', response.headers['content-length']);
       }
       res.send(response.data);
     } catch (error: any) {
-      const urlStr = req.query.url as string || '';
+      const urlStr = url || (req.query.url as string) || '';
       console.warn(`[Proxy API] Error fetching ${urlStr} (${error.message})`);
       res.status(502).json({ error: 'Failed to fetch GeoTIFF', details: error.message });
     }
