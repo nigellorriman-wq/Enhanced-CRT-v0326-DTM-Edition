@@ -579,8 +579,8 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }}></div> Elevation Profile</span>
           </div>
         </div>
-        <div className="h-[260px] bg-slate-50 rounded-xl p-4 border border-slate-100">
-          <ResponsiveContainer width="100%" height="100%">
+        <div className="h-[260px] w-full min-w-0 bg-slate-50 rounded-xl p-4 border border-slate-100">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
             <ComposedChart data={data} margin={{ top: 10, right: 40, left: 40, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#94a3b8" />
               <XAxis 
