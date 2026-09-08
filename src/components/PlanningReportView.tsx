@@ -429,19 +429,6 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
   };
 
   useEffect(() => {
-    if (tracks.length > 0) {
-      const generateAllProfiles = async () => {
-        for (const track of tracks) {
-          if (!profilesRef.current[track.id]) {
-            await generateProfile(track);
-          }
-        }
-      };
-      generateAllProfiles();
-    }
-  }, [tracks]);
-
-  useEffect(() => {
     if (currentTrack && !isSummaryPage) {
       generateProfile(currentTrack);
     }
