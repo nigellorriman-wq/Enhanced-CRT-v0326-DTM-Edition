@@ -755,10 +755,9 @@ const analyzeGreenShape = (points: GeoPoint[], concavityThreshold: number = 0.82
   const midY = (toY(basic.pA) + toY(basic.pB)) / 2;
   const midpointIsOutside = !isPointInPolygon({ x: midX, y: midY }, polyCoords);
 
-  // Changed from: const isLShape = midpointIsOutside || concavity < concavityThreshold || basic.ratio > 3.6;
-  const isLShape = midpointIsOutside || concavity < concavityThreshold;
+  const candidateLShape = midpointIsOutside || concavity < concavityThreshold;
 
-  if (isLShape) {
+  if (candidateLShape) {
     let elbowIdx = 0;
     let maxElbowDist = -1;
     const xA = toX(basic.pA), yA = toY(basic.pA);
@@ -775,36 +774,63 @@ const analyzeGreenShape = (points: GeoPoint[], concavityThreshold: number = 0.82
       }
     });
 
-    const s1 = getEGDAnalysis(points.slice(0, elbowIdx + 1), true);
-    const s2 = getEGDAnalysis(points.slice(elbowIdx), true);
+    const s1Pts = points.slice(0, elbowIdx + 1);
+    const s2Pts = points.slice(elbowIdx);
+    const a1 = calculateArea(s1Pts);
+    const a2 = calculateArea(s2Pts);
+    const minAreaFraction = Math.min(a1, a2) / (polyArea || 1);
 
-    let hasAnomaly = false;
-    if (s1 && s1.pA && s1.pB) {
-      const s1MidX = (toX(s1.pA) + toX(s1.pB)) / 2;
-      const s1MidY = (toY(s1.pA) + toY(s1.pB)) / 2;
-      if (!isPointInPolygon({ x: s1MidX, y: s1MidY }, polyCoords)) hasAnomaly = true;
-    }
-    if (!hasAnomaly && s2 && s2.pA && s2.pB) {
-      const s2MidX = (toX(s2.pA) + toX(s2.pB)) / 2;
-      const s2MidY = (toY(s2.pA) + toY(s2.pB)) / 2;
-      if (!isPointInPolygon({ x: s2MidX, y: s2MidY }, polyCoords)) hasAnomaly = true;
+    const s1 = getEGDAnalysis(s1Pts, true);
+    const s2 = getEGDAnalysis(s2Pts, true);
+
+    // To be a valid two-portion L-shape, each portion must be a meaningful, playable putting surface (at least 20% of green area)
+    const isValidTwoPortions = s1 && s2 && minAreaFraction >= 0.20;
+
+    if (isValidTwoPortions) {
+      let hasAnomaly = false;
+      if (s1 && s1.pA && s1.pB) {
+        const s1MidX = (toX(s1.pA) + toX(s1.pB)) / 2;
+        const s1MidY = (toY(s1.pA) + toY(s1.pB)) / 2;
+        if (!isPointInPolygon({ x: s1MidX, y: s1MidY }, polyCoords)) hasAnomaly = true;
+      }
+      if (!hasAnomaly && s2 && s2.pA && s2.pB) {
+        const s2MidX = (toX(s2.pA) + toX(s2.pB)) / 2;
+        const s2MidY = (toY(s2.pA) + toY(s2.pB)) / 2;
+        if (!isPointInPolygon({ x: s2MidX, y: s2MidY }, polyCoords)) hasAnomaly = true;
+      }
+
+      let anomalousResult = null;
+      if (hasAnomaly) {
+        anomalousResult = performAnomalousAnalysis(points, basic.pA, basic.pB);
+      }
+
+      return { 
+        ...basic, 
+        isLShape: true, 
+        method: anomalousResult ? anomalousResult.method : "Two portions",
+        hasAnomaly,
+        anomalousResult,
+        isAnomalous: !!anomalousResult,
+        s1, 
+        s2 
+      };
     }
 
-    let anomalousResult = null;
-    if (hasAnomaly) {
-      anomalousResult = performAnomalousAnalysis(points, basic.pA, basic.pB);
+    // If it cannot be divided into two valid portions:
+    // Check if the shape is genuinely anomalous (midpoint outside or significantly curved)
+    const anomalousResult = performAnomalousAnalysis(points, basic.pA, basic.pB);
+    if (midpointIsOutside || (anomalousResult && anomalousResult.isManualReq)) {
+      return {
+        ...basic,
+        isLShape: false,
+        method: anomalousResult ? anomalousResult.method : "Inconsistent Shape",
+        hasAnomaly: true,
+        anomalousResult,
+        isAnomalous: true,
+        s1: null,
+        s2: null
+      };
     }
-
-    return { 
-      ...basic, 
-      isLShape: true, 
-      method: anomalousResult ? anomalousResult.method : "Two portions",
-      hasAnomaly,
-      anomalousResult,
-      isAnomalous: !!anomalousResult,
-      s1, 
-      s2 
-    };
   }
 
   return { ...basic, isLShape: false, hasAnomaly: false, isAnomalous: false, s1: null, s2: null };
@@ -2283,6 +2309,7 @@ const TerrainManager: React.FC<{
   geoTiffOpacities: Record<string, number>,
   onGeoTiffOpacityChange: (id: string, opacity: number) => void,
   isOverlayLoading: Record<string, boolean>,
+  overlayProgress?: { id: string; name?: string; percent: number; status: string } | null,
   onZoomTo: (id: string) => void,
   discoveredTiles: LidarTile[],
   onDiscoveredTilesChange: (tiles: LidarTile[]) => void,
@@ -2294,7 +2321,7 @@ const TerrainManager: React.FC<{
   map, onClose, onDrawMode, selectionBounds, 
   offlineGeoTiffs, onGeoTiffDownload, onGeoTiffDelete, activeOverlays, 
   onToggleOverlay, lidarGridOpacity, onLidarGridOpacityChange, geoTiffOpacities, 
-  onGeoTiffOpacityChange, isOverlayLoading, onZoomTo,
+  onGeoTiffOpacityChange, isOverlayLoading, overlayProgress, onZoomTo,
   discoveredTiles, onDiscoveredTilesChange, selectedTileIds, onToggleTileSelection,
   onClearSelection, onSetSelection
 }) => {
@@ -2805,6 +2832,24 @@ const TerrainManager: React.FC<{
                         </div>
                       </div>
 
+                      {isOverlayLoading[tiff.id] && overlayProgress?.id === tiff.id && (
+                        <div className="bg-slate-950/70 p-2.5 rounded-xl border border-emerald-500/30 flex flex-col gap-1.5 animate-pulse">
+                          <div className="flex justify-between items-center text-[9px]">
+                            <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                              <RotateCcw size={10} className="animate-spin text-emerald-400 shrink-0" />
+                              {overlayProgress.status}
+                            </span>
+                            <span className="text-emerald-300 font-mono font-bold">{overlayProgress.percent}%</span>
+                          </div>
+                          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                            <div 
+                              className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full transition-all duration-150 rounded-full" 
+                              style={{ width: `${Math.max(5, overlayProgress.percent)}%` }} 
+                            />
+                          </div>
+                        </div>
+                      )}
+
                       {activeOverlays[tiff.id] && (
                         <div className="bg-slate-950/50 p-2 rounded-lg border border-white/5">
                           <div className="flex justify-between items-center mb-1">
@@ -3072,6 +3117,7 @@ const App: React.FC = () => {
   const [lidarGridOpacity, setLidarGridOpacity] = useState(1.0);
   const [geoTiffOpacities, setGeoTiffOpacities] = useState<Record<string, number>>({});
   const [isOverlayLoading, setIsOverlayLoading] = useState<Record<string, boolean>>({});
+  const [overlayProgress, setOverlayProgress] = useState<{ id: string; name?: string; percent: number; status: string } | null>(null);
   const [isPlanningSession, setIsPlanningSession] = useState(false);
   const [activeLidarLayers, setActiveLidarLayers] = useState<string>('scotland:lidar-dem-viridis');
   const [activeLidarStyles, setActiveLidarStyles] = useState<string>('');
@@ -3318,7 +3364,10 @@ const App: React.FC = () => {
       const newOverlays: Record<string, any> = {};
       for (const tiff of offlineGeoTiffs) {
         try {
-          const overlay = await lidarGeoTiffService.generateOverlay(tiff.id);
+          setOverlayProgress({ id: tiff.id, name: tiff.name, percent: 5, status: 'Initializing...' });
+          const overlay = await lidarGeoTiffService.generateOverlay(tiff.id, (p) => {
+            setOverlayProgress({ id: tiff.id, name: tiff.name, percent: p.percent, status: p.status });
+          });
           if (overlay) {
             newOverlays[tiff.id] = overlay;
           }
@@ -3326,6 +3375,7 @@ const App: React.FC = () => {
           console.error(`[LiDAR] Failed to generate overlay for ${tiff.id}`, err);
         }
       }
+      setOverlayProgress(null);
       setActiveGeoTiffOverlays(newOverlays);
     };
     syncOverlays();
@@ -3349,12 +3399,17 @@ const App: React.FC = () => {
         return next;
       });
     } else {
+      const targetTiff = offlineGeoTiffs.find(t => t.id === id);
+      const tiffName = targetTiff?.name || id;
       setIsOverlayLoading(prev => ({ ...prev, [id]: true }));
+      setOverlayProgress({ id, name: tiffName, percent: 5, status: 'Initializing GeoTIFF...' });
       // Switch mapLayerMode to a geotiff mode so overlay is visible
       setMapLayerMode(prev => (prev === 'osm' ? 'osm_geotiff' : 'satellite_geotiff'));
       try {
         console.log(`[LiDAR] Generating overlay for ${id}...`);
-        const overlay = await lidarGeoTiffService.generateOverlay(id);
+        const overlay = await lidarGeoTiffService.generateOverlay(id, (p) => {
+          setOverlayProgress({ id, name: tiffName, percent: p.percent, status: p.status });
+        });
         if (overlay) {
           console.log(`[LiDAR] Overlay generated for ${id}, updating state`);
           // Disable following so the map doesn't snap back
@@ -3392,6 +3447,7 @@ const App: React.FC = () => {
         console.error('[LiDAR] Failed to generate overlay', err);
       } finally {
         setIsOverlayLoading(prev => ({ ...prev, [id]: false }));
+        setOverlayProgress(null);
       }
     }
   };
@@ -4892,6 +4948,29 @@ const App: React.FC = () => {
                   </>
                 )}
               </MapContainer>
+              {overlayProgress && (
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[2500] pointer-events-none transition-all duration-200">
+                  <div className="bg-slate-900/95 backdrop-blur-md border border-emerald-500/40 rounded-2xl px-4 py-3 shadow-2xl flex flex-col gap-2 min-w-[280px] max-w-[360px] pointer-events-auto">
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2 text-emerald-400 font-bold truncate">
+                        <RotateCcw size={13} className="animate-spin text-emerald-400 shrink-0" />
+                        <span className="truncate">{overlayProgress.name || 'LiDAR GeoTIFF'}</span>
+                      </div>
+                      <span className="text-[11px] font-mono font-black text-emerald-300 ml-2 shrink-0">{overlayProgress.percent}%</span>
+                    </div>
+                    <div className="w-full bg-slate-800/90 rounded-full h-2 overflow-hidden border border-white/5">
+                      <div 
+                        className="bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-300 h-full transition-all duration-150 ease-out rounded-full"
+                        style={{ width: `${Math.max(5, overlayProgress.percent)}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between items-center text-[10px] text-slate-400">
+                      <span className="truncate">{overlayProgress.status}</span>
+                      <span className="text-[9px] text-slate-500 shrink-0 ml-2 font-medium">LiDAR Processing</span>
+                    </div>
+                  </div>
+                </div>
+              )}
               {selectionMode && (
                 <div className="absolute inset-x-0 top-0 z-[2500] p-4 flex flex-col items-center pointer-events-none">
                   <div className="bg-slate-900/90 backdrop-blur-md border border-blue-500/50 rounded-2xl p-4 shadow-2xl flex flex-col items-center gap-3 pointer-events-auto max-w-[280px] text-center">
@@ -5337,6 +5416,7 @@ const App: React.FC = () => {
           geoTiffOpacities={geoTiffOpacities}
           onGeoTiffOpacityChange={(id, opacity) => setGeoTiffOpacities(prev => ({ ...prev, [id]: opacity }))}
           isOverlayLoading={isOverlayLoading}
+          overlayProgress={overlayProgress}
           onZoomTo={handleZoomToGeoTiff}
           discoveredTiles={discoveredTiles}
           onDiscoveredTilesChange={setDiscoveredTiles}

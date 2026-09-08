@@ -110,8 +110,9 @@ class LidarGeoTiffService {
       for (let b = 0; b < numBands; b++) {
         const data = Array.isArray(rasters) ? rasters[b] : rasters;
         let validCount = 0;
+        const stride = data.length > 5000000 ? Math.floor(data.length / 2000000) : 1;
         
-        for (let i = 0; i < data.length; i++) {
+        for (let i = 0; i < data.length; i += stride) {
           const val = data[i];
           if (this.isValidElevation(val, noData)) {
             if (val < min) min = val;
@@ -568,27 +569,34 @@ class LidarGeoTiffService {
   /**
    * Generates a color-mapped overlay for a GeoTIFF
    */
-  async generateOverlay(id: string): Promise<{ dataUrl: string; bounds: [[number, number], [number, number]]; corners?: [number, number][]; timestamp?: number } | null> {
+  async generateOverlay(
+    id: string,
+    onProgress?: (progress: { percent: number; status: string }) => void
+  ): Promise<{ dataUrl: string; bounds: [[number, number], [number, number]]; corners?: [number, number][]; timestamp?: number } | null> {
+    onProgress?.({ percent: 5, status: 'Initializing GeoTIFF reader...' });
     let entry = this.loadedTiffs.get(id);
     if (!entry) {
+      onProgress?.({ percent: 10, status: 'Loading offline GeoTIFF...' });
       await this.loadAll();
       entry = this.loadedTiffs.get(id);
     }
     if (!entry) return null;
 
     const { image, noData } = entry;
-    let width = image.getWidth();
-    let height = image.getHeight();
+    const origWidth = image.getWidth();
+    const origHeight = image.getHeight();
+    let width = origWidth;
+    let height = origHeight;
     const [minX, minY, maxX, maxY] = image.getBoundingBox();
     
-    // Downsample if too large for canvas (max 4096 for performance and compatibility)
-    const MAX_CANVAS_SIZE = 4096;
+    // Downsample if too large for canvas (max 2048 for universal browser compatibility and speed)
+    const MAX_CANVAS_SIZE = 2048;
     let sampleScale = 1;
     if (width > MAX_CANVAS_SIZE || height > MAX_CANVAS_SIZE) {
       sampleScale = Math.max(width / MAX_CANVAS_SIZE, height / MAX_CANVAS_SIZE);
       width = Math.floor(width / sampleScale);
       height = Math.floor(height / sampleScale);
-      console.log(`[LiDAR] Downsampling overlay for ${id} from original size to ${width}x${height} (scale: ${sampleScale.toFixed(2)})`);
+      console.log(`[LiDAR] Downsampling overlay for ${id} from original size ${origWidth}x${origHeight} to ${width}x${height} (scale: ${sampleScale.toFixed(2)})`);
     }
     
     // Determine WGS84 corners and bounds from native GeoTIFF coordinates
@@ -629,6 +637,7 @@ class LidarGeoTiffService {
     // Read all rasters
     let rasters;
     try {
+      onProgress?.({ percent: 20, status: 'Reading elevation raster data...' });
       rasters = await this.ensureRasters(entry);
       
       if (!rasters) {
@@ -636,6 +645,7 @@ class LidarGeoTiffService {
         return null;
       }
 
+      onProgress?.({ percent: 35, status: 'Scanning terrain altitude range...' });
       const numBands = Array.isArray(rasters) ? rasters.length : 1;
       let data = Array.isArray(rasters) ? rasters[0] : rasters;
       let localMin = Infinity;
@@ -649,8 +659,9 @@ class LidarGeoTiffService {
         let bandMin = Infinity;
         let bandMax = -Infinity;
         let bandValidCount = 0;
+        const stride = bandData.length > 5000000 ? Math.floor(bandData.length / 2000000) : 1;
 
-        for (let i = 0; i < bandData.length; i++) {
+        for (let i = 0; i < bandData.length; i += stride) {
           const val = bandData[i];
           if (this.isValidElevation(val, noData)) {
             if (val < bandMin) bandMin = val;
@@ -706,10 +717,23 @@ class LidarGeoTiffService {
         lut[i * 3 + 2] = color.b;
       }
 
+      const chunkSize = Math.max(50, Math.floor(height / 20));
       for (let r = 0; r < height; r++) {
+        if (r % chunkSize === 0) {
+          const currentPct = 40 + Math.round((r / height) * 50);
+          onProgress?.({ percent: currentPct, status: `Rendering terrain surface (${currentPct}%)...` });
+          // Yield to browser to keep animation and progress bar responsive
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        const origR = Math.min(origHeight - 1, Math.floor(r * sampleScale));
+        const rowOffset = origR * origWidth;
+        const canvasRowOffset = r * width * 4;
+
         for (let c = 0; c < width; c++) {
-          const tiffIdx = r * width + c;
-          const canvasIdx = (r * width + c) * 4;
+          const origC = Math.min(origWidth - 1, Math.floor(c * sampleScale));
+          const tiffIdx = rowOffset + origC;
+          const canvasIdx = canvasRowOffset + c * 4;
           const val = data[tiffIdx];
           
           if (!this.isValidElevation(val, noData)) {
@@ -725,6 +749,7 @@ class LidarGeoTiffService {
         }
       }
 
+      onProgress?.({ percent: 95, status: 'Finalizing map overlay texture...' });
       ctx.putImageData(imageData, 0, 0);
       const dataUrl = canvas.toDataURL('image/png');
       
@@ -741,6 +766,7 @@ class LidarGeoTiffService {
         // Fallback to calculated corners
       }
       
+      onProgress?.({ percent: 100, status: 'Complete' });
       return {
         dataUrl,
         bounds: [[minLat, minLng], [maxLat, maxLng]],
