@@ -118,6 +118,8 @@ function extractElevationFromWmsResponse(data: any): number | null {
 // Track upstream WMS service availability to avoid blocking when JNCC is returning 502/504
 let wmsOutageUntil = 0;
 let wmsConsecutiveErrors = 0;
+const lidarElevationCache = new Map<string, number>();
+let preferredLidarLayer: string | null = null;
 
 async function startServer() {
   const app = express();
@@ -139,6 +141,11 @@ async function startServer() {
 
       const latNum = Number(lat);
       const lngNum = Number(lng);
+
+      const cacheKey = `${latNum.toFixed(5)},${lngNum.toFixed(5)}`;
+      if (lidarElevationCache.has(cacheKey)) {
+        return res.json({ elevation: lidarElevationCache.get(cacheKey) });
+      }
 
       // Scotland approximate bounding box
       const isOutsideScotland = latNum < 54.5 || latNum > 61.0 || lngNum < -9.0 || lngNum > -0.5;
@@ -168,13 +175,14 @@ async function startServer() {
       let elevation = null;
       let primaryRequestSuccess = false;
       let isHostDown = false;
+      let successfulLayer: string | null = null;
 
       // Convert to BNG for more reliable querying against JNCC Scottish data
       const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lngNum, latNum]);
       const delta = 5; // 5 metre bbox to ensure we hit data points in lower-res layers
 
-      // Try the aggregate layer first (most efficient "Combined" path)
-      const primaryLayer = 'scotland:lidar-aggregate';
+      // Try preferred layer first if previously successful for this area
+      const primaryLayer = preferredLidarLayer || 'scotland:lidar-aggregate';
       const params = new URLSearchParams({
         service: 'WMS',
         version: '1.1.1',
@@ -196,6 +204,9 @@ async function startServer() {
         primaryRequestSuccess = true;
         wmsConsecutiveErrors = 0;
         elevation = extractElevationFromWmsResponse(response.data);
+        if (elevation !== null) {
+          successfulLayer = primaryLayer;
+        }
       } catch (e: any) {
         const status = e.response?.status;
         if (status === 502 || status === 504 || e.code === 'ECONNABORTED' || e.code === 'ETIMEDOUT') {
@@ -209,8 +220,8 @@ async function startServer() {
 
       // Fallback: only try individual phase layers if the host is responsive and primary returned empty
       if (elevation === null && !isHostDown) {
-        const phaseLayers = layers.filter(l => l !== primaryLayer);
-        for (const layer of phaseLayers) {
+        const remainingLayers = layers.filter(l => l !== primaryLayer);
+        for (const layer of remainingLayers) {
           try {
             const individualParams = new URLSearchParams(params);
             individualParams.set('layers', layer);
@@ -219,6 +230,7 @@ async function startServer() {
             const response = await axios.get(wmsUrl, { params: individualParams, timeout: 2000 });
             elevation = extractElevationFromWmsResponse(response.data);
             if (elevation !== null) {
+              successfulLayer = layer;
               break;
             }
           } catch (e: any) {
@@ -241,6 +253,7 @@ async function startServer() {
             const response = await axios.get(wmsUrl, { params: wgsParams, timeout: 2000 });
             elevation = extractElevationFromWmsResponse(response.data);
             if (elevation !== null) {
+              successfulLayer = layer;
               break;
             }
           } catch (e) {
@@ -250,6 +263,13 @@ async function startServer() {
       }
 
       if (elevation !== null && elevation !== undefined) {
+        if (successfulLayer) {
+          preferredLidarLayer = successfulLayer;
+        }
+        if (lidarElevationCache.size > 10000) {
+          lidarElevationCache.clear();
+        }
+        lidarElevationCache.set(cacheKey, elevation);
         res.json({ elevation });
       } else {
         res.status(404).json({ error: 'No elevation data found at this location' });

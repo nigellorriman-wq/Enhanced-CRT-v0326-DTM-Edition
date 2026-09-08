@@ -171,6 +171,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
 
   const [isTiffReady, setIsTiffReady] = useState(false);
   const onlineOutageRef = useRef(false);
+  const consecutiveFailuresRef = useRef(0);
 
   useEffect(() => {
     const loadTiffs = async () => {
@@ -207,11 +208,11 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
       console.error('[LiDAR] Failed to read elevation from GeoTIFF in report', e);
     }
 
-    // 2. Fallback to Online API with 1.5-second fast-fail timeout protection
+    // 2. Fallback to Online API with 6-second timeout protection
     if (!onlineOutageRef.current) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
 
         const response = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`, {
           signal: controller.signal
@@ -220,6 +221,7 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
 
         const contentType = response.headers.get('content-type');
         if (response.ok && contentType && contentType.includes('application/json')) {
+          consecutiveFailuresRef.current = 0;
           const data = await response.json();
           
           let elevation: number | null = null;
@@ -241,10 +243,16 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             return elevation;
           }
         } else if (response.status >= 500) {
-          onlineOutageRef.current = true;
+          consecutiveFailuresRef.current++;
+          if (consecutiveFailuresRef.current >= 5) {
+            onlineOutageRef.current = true;
+          }
         }
       } catch (e) {
-        onlineOutageRef.current = true;
+        consecutiveFailuresRef.current++;
+        if (consecutiveFailuresRef.current >= 5) {
+          onlineOutageRef.current = true;
+        }
       }
     }
 
@@ -337,9 +345,13 @@ export const PlanningReportView: React.FC<PlanningReportViewProps> = ({ tracks, 
             stepsData.push({ step, t, lat, lng, stepDistMetres, alt: null });
           }
 
-          // Fetch elevations sequentially to ensure zero read collisions
-          for (let s = 0; s < stepsData.length; s++) {
-            stepsData[s].alt = await fetchLidar(stepsData[s].lat, stepsData[s].lng);
+          // Fetch elevations in small concurrent batches for speed and smoothness
+          const BATCH_SIZE = 5;
+          for (let s = 0; s < stepsData.length; s += BATCH_SIZE) {
+            const batch = stepsData.slice(s, s + BATCH_SIZE);
+            await Promise.all(batch.map(async (stepItem) => {
+              stepItem.alt = await fetchLidar(stepItem.lat, stepItem.lng);
+            }));
           }
 
           // Interpolate missing intermediate elevations using nearest valid LiDAR neighbors

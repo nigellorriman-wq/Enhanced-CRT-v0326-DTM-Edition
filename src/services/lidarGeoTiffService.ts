@@ -33,6 +33,31 @@ class LidarGeoTiffService {
     readPromise?: Promise<any>;
   }> = new Map();
   private globalAltitudeRange: { min: number; max: number } | null = null;
+  private elevationCache: Map<string, number> = new Map();
+
+  /**
+   * Helper to determine query coordinates in the image's native CRS
+   */
+  getQueryCoordsForImage(lat: number, lng: number, image: any): [number, number] {
+    const [minX, minY, maxX, maxY] = image.getBoundingBox();
+    if (minX >= -180 && maxX <= 180 && minY >= -90 && maxY <= 90) {
+      // Native GeoTIFF is in WGS84 Lat/Lng (EPSG:4326)
+      return [lng, lat];
+    } else if (minX >= 50000 && maxX <= 800000 && minY >= 0 && maxY <= 1300000) {
+      // Native GeoTIFF is in British National Grid (EPSG:27700)
+      return proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+    } else if (minX >= 100000 && maxX <= 900000 && minY >= 4000000 && maxY <= 7500000) {
+      // Native GeoTIFF is in UTM Zone 30N (EPSG:32630)
+      try {
+        return proj4("EPSG:4326", "+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", [lng, lat]);
+      } catch {
+        return proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+      }
+    } else {
+      // Default to British National Grid (EPSG:27700)
+      return proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
+    }
+  }
 
   private isValidElevation(val: number, noData?: number | null): boolean {
     if (val === null || val === undefined || isNaN(val)) return false;
@@ -206,12 +231,31 @@ class LidarGeoTiffService {
       const noData = image.getGDALNoData();
       const [minX, minY, maxX, maxY] = image.getBoundingBox();
       
-      // Convert all 4 BNG corners back to WGS84 for the tile bounds metadata
-      // This ensures we use the full envelope to eliminate gaps between tiles
-      const [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
-      const [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
-      const [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
-      const [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+      let p1Lng: number, p1Lat: number;
+      let p2Lng: number, p2Lat: number;
+      let p3Lng: number, p3Lat: number;
+      let p4Lng: number, p4Lat: number;
+
+      if (minX >= -180 && maxX <= 180 && minY >= -90 && maxY <= 90) {
+        // Native WGS84
+        p1Lng = minX; p1Lat = minY;
+        p2Lng = maxX; p2Lat = minY;
+        p3Lng = maxX; p3Lat = maxY;
+        p4Lng = minX; p4Lat = maxY;
+      } else if (minX >= 100000 && maxX <= 900000 && minY >= 4000000 && maxY <= 7500000) {
+        // UTM Zone 30N
+        const utmProj = "+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs";
+        [p1Lng, p1Lat] = proj4(utmProj, "EPSG:4326", [minX, minY]);
+        [p2Lng, p2Lat] = proj4(utmProj, "EPSG:4326", [maxX, minY]);
+        [p3Lng, p3Lat] = proj4(utmProj, "EPSG:4326", [maxX, maxY]);
+        [p4Lng, p4Lat] = proj4(utmProj, "EPSG:4326", [minX, maxY]);
+      } else {
+        // Default British National Grid (EPSG:27700)
+        [p1Lng, p1Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, minY]);
+        [p2Lng, p2Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, minY]);
+        [p3Lng, p3Lat] = proj4("EPSG:27700", "EPSG:4326", [maxX, maxY]);
+        [p4Lng, p4Lat] = proj4("EPSG:27700", "EPSG:4326", [minX, maxY]);
+      }
       
       const minLat = Math.min(p1Lat, p2Lat, p3Lat, p4Lat);
       const maxLat = Math.max(p1Lat, p2Lat, p3Lat, p4Lat);
@@ -219,6 +263,8 @@ class LidarGeoTiffService {
       const maxLng = Math.max(p1Lng, p2Lng, p3Lng, p4Lng);
       
       const resolution = image.getResolution()[0];
+      const phaseMatch = name.match(/Ph(\d+)/i);
+      const phase = phaseMatch ? parseInt(phaseMatch[1]) : 1;
 
       const offlineData: OfflineGeoTiff = {
         id: url,
@@ -226,7 +272,9 @@ class LidarGeoTiffService {
         bounds: { minLat, maxLat, minLng, maxLng },
         corners: [[p1Lat, p1Lng], [p2Lat, p2Lng], [p3Lat, p3Lng], [p4Lat, p4Lng]],
         resolution,
+        phase,
         blob,
+        saved: true,
         addedAt: Date.now()
       };
 
@@ -310,6 +358,7 @@ class LidarGeoTiffService {
       resolution,
       phase,
       blob,
+      saved: true,
       addedAt: Date.now()
     };
 
@@ -371,6 +420,12 @@ class LidarGeoTiffService {
     for (const key of tiffKeys) {
       const data = await get<OfflineGeoTiff>(key);
       if (data) {
+        // Ensure tile is marked as saved so clearUnsaved doesn't purge it
+        if (!data.saved) {
+          data.saved = true;
+          await set(key, data).catch(() => {});
+        }
+
         // Pre-initialize the GeoTIFF object for fast querying
         if (!this.loadedTiffs.has(data.id)) {
           const tiff = await fromGeoTIFF.fromBlob(data.blob);
@@ -399,87 +454,87 @@ class LidarGeoTiffService {
    * Queries elevation from loaded GeoTIFFs for a given lat/lng
    */
   async getElevation(lat: number, lng: number): Promise<number | null> {
+    const cacheKey = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+    if (this.elevationCache.has(cacheKey)) {
+      return this.elevationCache.get(cacheKey)!;
+    }
+
     if (this.loadedTiffs.size === 0) {
       await this.loadAll();
     }
 
-    if (this.loadedTiffs.size === 0) return null;
+    if (this.loadedTiffs.size > 0) {
+      // Prioritize latest phase first, then highest resolution
+      const sortedTiffs = Array.from(this.loadedTiffs.entries()).sort((a, b) => {
+        const phaseA = parseInt(a[0].match(/ph(\d+)/i)?.[1] || '1');
+        const phaseB = parseInt(b[0].match(/ph(\d+)/i)?.[1] || '1');
+        if (phaseA !== phaseB) return phaseB - phaseA;
+        
+        const resA = a[1].image.getResolution()[0];
+        const resB = b[1].image.getResolution()[0];
+        return resA - resB;
+      });
 
-    // Prioritize latest phase first, then highest resolution
-    const sortedTiffs = Array.from(this.loadedTiffs.entries()).sort((a, b) => {
-      const phaseA = parseInt(a[0].match(/ph(\d+)/i)?.[1] || '1');
-      const phaseB = parseInt(b[0].match(/ph(\d+)/i)?.[1] || '1');
-      if (phaseA !== phaseB) return phaseB - phaseA;
-      
-      const resA = a[1].image.getResolution()[0];
-      const resB = b[1].image.getResolution()[0];
-      return resA - resB;
-    });
+      for (const [id, entry] of sortedTiffs) {
+        const { image, noData } = entry;
+        const [minX, minY, maxX, maxY] = image.getBoundingBox();
+        const [queryX, queryY] = this.getQueryCoordsForImage(lat, lng, image);
+        
+        // Check if point is within bounds
+        if (queryX >= minX && queryX <= maxX && queryY >= minY && queryY <= maxY) {
+          const width = image.getWidth();
+          const height = image.getHeight();
+          const resX = (maxX - minX) / width;
+          const resY = (maxY - minY) / height;
 
-    for (const [id, entry] of sortedTiffs) {
-      const { image, noData } = entry;
-      const [minX, minY, maxX, maxY] = image.getBoundingBox();
-      
-      // Determine CRS of the GeoTIFF by checking the magnitude of bounding box coordinates
-      let queryX = lng;
-      let queryY = lat;
+          const x = Math.min(width - 1, Math.max(0, Math.floor((queryX - minX) / resX)));
+          const y = Math.min(height - 1, Math.max(0, Math.floor((maxY - queryY) / resY)));
 
-      if (minX >= -180 && maxX <= 180 && minY >= -90 && maxY <= 90) {
-        // Native GeoTIFF is in WGS84 Lat/Lng (EPSG:4326)
-        queryX = lng;
-        queryY = lat;
-      } else if (minX >= 50000 && maxX <= 800000 && minY >= 0 && maxY <= 1300000) {
-        // Native GeoTIFF is in British National Grid (EPSG:27700)
-        const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
-        queryX = e;
-        queryY = n;
-      } else if (minX >= 100000 && maxX <= 900000 && minY >= 4000000 && maxY <= 7500000) {
-        // Native GeoTIFF is in UTM Zone 30N (EPSG:32630)
-        try {
-          const [utmE, utmN] = proj4("EPSG:4326", "+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs", [lng, lat]);
-          queryX = utmE;
-          queryY = utmN;
-        } catch {
-          const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
-          queryX = e;
-          queryY = n;
-        }
-      } else {
-        // Default to British National Grid (EPSG:27700)
-        const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
-        queryX = e;
-        queryY = n;
-      }
-      
-      // Check if point is within bounds
-      if (queryX >= minX && queryX <= maxX && queryY >= minY && queryY <= maxY) {
-        const width = image.getWidth();
-        const height = image.getHeight();
-        const resX = (maxX - minX) / width;
-        const resY = (maxY - minY) / height;
+          if (x >= 0 && x < width && y >= 0 && y < height) {
+            try {
+              const rasters = await this.ensureRasters(entry);
+              if (rasters) {
+                const bitsPerSample = entry.image.fileDirectory?.BitsPerSample?.[0] || 32;
+                const isPalette = entry.image.fileDirectory?.PhotometricInterpretation === 3;
+                const is8Bit = bitsPerSample <= 8 || isPalette;
 
-        const x = Math.min(width - 1, Math.max(0, Math.floor((queryX - minX) / resX)));
-        const y = Math.min(height - 1, Math.max(0, Math.floor((maxY - queryY) / resY)));
-
-        if (x >= 0 && x < width && y >= 0 && y < height) {
-          try {
-            const rasters = await this.ensureRasters(entry);
-            if (rasters) {
-              const numBands = Array.isArray(rasters) ? rasters.length : 1;
-              for (let b = 0; b < numBands; b++) {
-                const data = Array.isArray(rasters) ? rasters[b] : rasters;
-                if (data) {
-                  const elevation = Number(data[y * width + x]);
-                  if (this.isValidElevation(elevation, noData)) {
-                    return elevation;
+                const numBands = Array.isArray(rasters) ? rasters.length : 1;
+                for (let b = 0; b < numBands; b++) {
+                  const data = Array.isArray(rasters) ? rasters[b] : rasters;
+                  if (data) {
+                    // Do NOT treat 8-bit visual palette pixels as elevations
+                    if (data instanceof Uint8Array || is8Bit) {
+                      continue;
+                    }
+                    const elevation = Number(data[y * width + x]);
+                    if (this.isValidElevation(elevation, noData)) {
+                      this.elevationCache.set(cacheKey, elevation);
+                      return elevation;
+                    }
                   }
                 }
               }
+            } catch (e) {
+              console.error('[LiDAR] Error reading raster for elevation', e);
             }
-          } catch (e) {
-            console.error('[LiDAR] Error reading raster for elevation', e);
           }
         }
+      }
+    }
+
+    // Fallback: If area is covered by downloaded tiles or loaded tiles, fetch 32-bit elevation from /api/lidar
+    if (this.isAreaDownloaded(lat, lng) || this.loadedTiffs.size > 0) {
+      try {
+        const res = await fetch(`/api/lidar?lat=${lat}&lng=${lng}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (typeof data.elevation === 'number' && !isNaN(data.elevation)) {
+            this.elevationCache.set(cacheKey, data.elevation);
+            return data.elevation;
+          }
+        }
+      } catch (e) {
+        // Fall through
       }
     }
     
@@ -506,12 +561,10 @@ class LidarGeoTiffService {
   isAreaDownloaded(lat: number, lng: number): boolean {
     if (this.loadedTiffs.size === 0) return false;
     
-    // Convert WGS84 to BNG for lookup
-    const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
-    
     for (const entry of this.loadedTiffs.values()) {
       const [minX, minY, maxX, maxY] = entry.image.getBoundingBox();
-      if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
+      const [qx, qy] = this.getQueryCoordsForImage(lat, lng, entry.image);
+      if (qx >= minX && qx <= maxX && qy >= minY && qy <= maxY) {
         return true;
       }
     }
@@ -524,14 +577,18 @@ class LidarGeoTiffService {
   getBestResolution(lat: number, lng: number): number | null {
     if (this.loadedTiffs.size === 0) return null;
     
-    const [e, n] = proj4("EPSG:4326", "EPSG:27700", [lng, lat]);
     let bestRes = Infinity;
     let found = false;
     
     for (const entry of this.loadedTiffs.values()) {
       const [minX, minY, maxX, maxY] = entry.image.getBoundingBox();
-      if (e >= minX && e <= maxX && n >= minY && n <= maxY) {
-        const res = entry.image.getResolution()[0];
+      const [qx, qy] = this.getQueryCoordsForImage(lat, lng, entry.image);
+      if (qx >= minX && qx <= maxX && qy >= minY && qy <= maxY) {
+        let res = entry.image.getResolution()[0];
+        // If resolution is in degrees (< 0.01), convert to approximate meters
+        if (res > 0 && res < 0.01) {
+          res = res * 111320;
+        }
         if (res < bestRes) {
           bestRes = res;
           found = true;
